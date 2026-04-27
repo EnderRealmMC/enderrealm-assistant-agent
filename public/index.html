@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EnderRealm Assistant</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1a1a2e;
+      color: #eee;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+
+    h1 {
+      text-align: center;
+      margin-bottom: 20px;
+      color: #00d4ff;
+    }
+
+    .config-bar {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 16px;
+      align-items: center;
+    }
+
+    .config-bar input {
+      flex: 1;
+      padding: 8px 12px;
+      border: 1px solid #333;
+      border-radius: 6px;
+      background: #16213e;
+      color: #eee;
+      font-size: 13px;
+    }
+
+    .config-bar input:focus {
+      outline: none;
+      border-color: #00d4ff;
+    }
+
+    .config-bar button {
+      padding: 8px 16px;
+      background: #333;
+      color: #eee;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .config-bar button:hover {
+      background: #444;
+    }
+
+    .chat-container {
+      flex: 1;
+      overflow-y: auto;
+      border: 1px solid #333;
+      border-radius: 8px;
+      padding: 16px;
+      background: #16213e;
+      margin-bottom: 16px;
+      min-height: 400px;
+    }
+
+    .message {
+      margin-bottom: 12px;
+      padding: 10px 14px;
+      border-radius: 8px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .message.user {
+      background: #0f3460;
+      margin-left: 20%;
+    }
+
+    .message.assistant {
+      background: #1a1a2e;
+      border: 1px solid #333;
+      margin-right: 20%;
+    }
+
+    .message.error {
+      background: #4a1515;
+      color: #ff6b6b;
+    }
+
+    .input-container {
+      display: flex;
+      gap: 10px;
+    }
+
+    textarea {
+      flex: 1;
+      padding: 12px;
+      border: 1px solid #333;
+      border-radius: 8px;
+      background: #16213e;
+      color: #eee;
+      font-size: 14px;
+      resize: none;
+      height: 50px;
+    }
+
+    textarea:focus {
+      outline: none;
+      border-color: #00d4ff;
+    }
+
+    button {
+      padding: 12px 24px;
+      background: #00d4ff;
+      color: #1a1a2e;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: bold;
+      transition: background 0.2s;
+    }
+
+    button:hover {
+      background: #00a8cc;
+    }
+
+    button:disabled {
+      background: #555;
+      cursor: not-allowed;
+    }
+
+    .session-info {
+      text-align: center;
+      font-size: 12px;
+      color: #888;
+      margin-bottom: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>EnderRealm Assistant</h1>
+    <div class="config-bar">
+      <input type="text" id="apiUrl" placeholder="Worker URL (e.g. http://localhost:8787)" value="http://localhost:8787" />
+      <button id="connectBtn">Connect</button>
+    </div>
+    <div class="session-info" id="sessionInfo">Not connected</div>
+    <div class="chat-container" id="chatContainer"></div>
+    <div class="input-container">
+      <textarea id="messageInput" placeholder="Type your message..." rows="1"></textarea>
+      <button id="sendButton">Send</button>
+    </div>
+  </div>
+
+  <script>
+    const chatContainer = document.getElementById('chatContainer');
+    const messageInput = document.getElementById('messageInput');
+    const sendButton = document.getElementById('sendButton');
+    const sessionInfo = document.getElementById('sessionInfo');
+    const apiUrlInput = document.getElementById('apiUrl');
+    const connectBtn = document.getElementById('connectBtn');
+
+    let sessionId = null;
+    let isStreaming = false;
+    let apiUrl = 'http://localhost:8787';
+
+    sessionInfo.textContent = 'Ready';
+
+    connectBtn.addEventListener('click', () => {
+      apiUrl = apiUrlInput.value.replace(/\/$/, '');
+      chatContainer.innerHTML = '';
+      sessionId = null;
+      sessionInfo.textContent = 'Connected to: ' + apiUrl;
+    });
+
+    function addMessage(role, content, isError) {
+      if (isError === undefined) isError = false;
+      const div = document.createElement('div');
+      div.className = 'message ' + role + (isError ? ' error' : '');
+      div.textContent = content;
+      chatContainer.appendChild(div);
+      chatContainer.scrollTop = chatContainer.scrollHeight;
+    }
+
+    async function sendMessage() {
+      const message = messageInput.value.trim();
+      if (!message || isStreaming) return;
+
+      isStreaming = true;
+      sendButton.disabled = true;
+      messageInput.value = '';
+
+      addMessage('user', message);
+
+      try {
+        const response = await fetch(apiUrl + '/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: message, sessionId: sessionId }),
+        });
+
+        const contentType = response.headers.get('content-type');
+        if (!response.ok) {
+          let errorMsg = 'Request failed';
+          if (contentType && contentType.includes('application/json')) {
+            const error = await response.json();
+            errorMsg = error.error || errorMsg;
+          }
+          throw new Error(errorMsg);
+        }
+
+        const newSessionId = response.headers.get('X-Session-Id');
+        if (newSessionId) {
+          sessionId = newSessionId;
+          sessionInfo.textContent = 'Session: ' + sessionId;
+        }
+
+        const assistantDiv = document.createElement('div');
+        assistantDiv.className = 'message assistant';
+        chatContainer.appendChild(assistantDiv);
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split('\n');
+
+          for (const line of lines) {
+            if (!line.startsWith('data:')) continue;
+
+            const dataStr = line.slice(5).trim();
+            if (dataStr === '[DONE]') continue;
+
+            try {
+              const data = JSON.parse(dataStr);
+              const content = data.choices?.[0]?.delta?.content;
+              if (content) {
+                assistantDiv.textContent += content;
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+              }
+            } catch (e) {
+              // Skip parse errors
+            }
+          }
+        }
+      } catch (error) {
+        addMessage('assistant', 'Error: ' + error.message, true);
+      } finally {
+        isStreaming = false;
+        sendButton.disabled = false;
+        messageInput.focus();
+      }
+    }
+
+    sendButton.addEventListener('click', sendMessage);
+    messageInput.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+  </script>
+</body>
+</html>

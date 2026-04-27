@@ -1,0 +1,32 @@
+{
+  "name": "enderrealm-assistant-agent",
+  "version": "1.0.0",
+  "description": "Agent backend with SSE streaming support",
+  "keywords": [
+    "agent",
+    "sse",
+    "cloudflare-worker"
+  ],
+  "homepage": "https://github.com/EnderRealmMC/enderrealm-assistant-agent#readme",
+  "bugs": {
+    "url": "https://github.com/EnderRealmMC/enderrealm-assistant-agent/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EnderRealmMC/enderrealm-assistant-agent.git"
+  },
+  "license": "ISC",
+  "author": "EnderRealm",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250414.0",
+    "wrangler": "^4.0.0"
+  }
+}

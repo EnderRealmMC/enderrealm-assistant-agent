@@ -1,6 +1,7 @@
 import type { Env, ChatRequest, Message } from '../types';
 import { OpenAIService } from '../services/openai.service';
 import { SessionService } from '../services/session.service';
+import { getSystemPrompt } from '../prompts/system';
 
 export async function handleChat(request: Request, env: Env): Promise<Response> {
   let body: ChatRequest;
@@ -26,6 +27,12 @@ export async function handleChat(request: Request, env: Env): Promise<Response> 
 
   const session = await sessionService.get(sessionId);
   const messages: Message[] = session?.messages || [];
+
+  // Prepend system prompt if this is a new session
+  if (messages.length === 0) {
+    const systemPrompt = getSystemPrompt();
+    messages.push({ role: 'system', content: systemPrompt });
+  }
 
   messages.push({ role: 'user', content: body.message });
 

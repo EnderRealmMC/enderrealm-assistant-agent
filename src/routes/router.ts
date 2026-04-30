@@ -1,11 +1,18 @@
 import type { Env } from '../types';
 import { handleChat } from './chat';
 import { handleHealth } from './health';
+import {
+  handleGetSession,
+  handleGetMessages,
+  handleExportSession,
+  handleImportSession,
+  handleCreateSession,
+} from './session';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Headers': 'Content-Type, X-Session-Token',
 };
 
 function withCors(response: Response): Response {
@@ -34,6 +41,16 @@ export async function router(request: Request, env: Env): Promise<Response> {
     response = await handleHealth(env);
   } else if (request.method === 'POST' && path === '/api/chat') {
     response = await handleChat(request, env);
+  } else if (request.method === 'POST' && path === '/api/session/create') {
+    response = await handleCreateSession(request, env);
+  } else if (request.method === 'GET' && path.startsWith('/api/session/export/')) {
+    response = await handleExportSession(request, env);
+  } else if (request.method === 'POST' && path === '/api/session/import') {
+    response = await handleImportSession(request, env);
+  } else if (request.method === 'GET' && path.match(/^\/api\/session\/[^/]+$/)) {
+    response = await handleGetSession(request, env);
+  } else if (request.method === 'GET' && path.match(/^\/api\/session\/[^/]+\/messages$/)) {
+    response = await handleGetMessages(request, env);
   } else {
     response = new Response('Not Found', { status: 404 });
   }

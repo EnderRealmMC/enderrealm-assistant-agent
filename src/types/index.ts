@@ -9,15 +9,22 @@ export interface ChatResponse {
 }
 
 export interface Message {
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'system';
   content: string;
 }
 
 export interface Session {
   id: string;
+  token: string;
   messages: Message[];
   createdAt: number;
   updatedAt: number;
+}
+
+export interface ImportResult {
+  id: string;
+  token: string;
+  messageCount: number;
 }
 
 export interface Env {

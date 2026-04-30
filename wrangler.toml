@@ -9,3 +9,6 @@ MODEL_NAME = "deepseek-ai/deepseek-v4-flash"
 [[kv_namespaces]]
 binding = "SESSIONS"
 id = "your-kv-namespace-id"
+
+[triggers]
+crons = ["0 4 * * *"]

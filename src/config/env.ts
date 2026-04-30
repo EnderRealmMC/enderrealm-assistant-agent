@@ -10,5 +10,8 @@ export function getEnv(env: Env): Env {
   if (!env.MODEL_NAME) {
     throw new Error('MODEL_NAME is required');
   }
+  if (env.SESSION_TTL_DAYS === undefined) {
+    env.SESSION_TTL_DAYS = 7;
+  }
   return env;
 }

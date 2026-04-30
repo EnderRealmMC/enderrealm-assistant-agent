@@ -19,6 +19,7 @@ export interface Session {
   messages: Message[];
   createdAt: number;
   updatedAt: number;
+  expiresAt: number;
 }
 
 export interface ImportResult {
@@ -32,4 +33,5 @@ export interface Env {
   OPENAI_BASE_URL: string;
   MODEL_NAME: string;
   SESSIONS: KVNamespace;
+  SESSION_TTL_DAYS?: number;
 }

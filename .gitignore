@@ -145,3 +145,8 @@ vite.config.ts.timestamp-*
 # Cloudflare Workers
 .dev.vars
 .wrangler/
+
+# Session files (test-chat.py)
+.session.json
+session-*.json
+*.session.json

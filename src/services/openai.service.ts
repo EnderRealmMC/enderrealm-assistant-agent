@@ -11,7 +11,7 @@ export class OpenAIService {
     this.modelName = env.MODEL_NAME;
   }
 
-  async createCompletion(messages: Message[]): Promise<Response> {
+  async createCompletion(messages: Message[], stream: boolean = true): Promise<Response> {
     const url = `${this.baseURL}/chat/completions`;
 
     const response = await fetch(url, {
@@ -23,7 +23,7 @@ export class OpenAIService {
       body: JSON.stringify({
         model: this.modelName,
         messages,
-        stream: true,
+        stream,
       }),
     });
 

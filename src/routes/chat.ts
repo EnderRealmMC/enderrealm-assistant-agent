@@ -8,7 +8,6 @@ function extractToken(request: Request): string | null {
 }
 
 export async function handleChat(request: Request, env: Env): Promise<Response> {
-  // Validate token
   const token = extractToken(request);
   if (!token) {
     return new Response(JSON.stringify({ error: 'Missing X-Session-Token header' }), {
@@ -18,7 +17,6 @@ export async function handleChat(request: Request, env: Env): Promise<Response> 
   }
 
   let body: ChatRequest;
-
   try {
     body = await request.json();
   } catch {
@@ -44,7 +42,6 @@ export async function handleChat(request: Request, env: Env): Promise<Response> 
 
   const sessionService = new SessionService(env);
 
-  // Validate token
   const isValid = await sessionService.validateToken(body.sessionId, token);
   if (!isValid) {
     return new Response(JSON.stringify({ error: 'Invalid token' }), {
@@ -56,19 +53,18 @@ export async function handleChat(request: Request, env: Env): Promise<Response> 
   const session = await sessionService.get(body.sessionId);
   const messages: Message[] = session?.messages || [];
 
-  // Prepend system prompt if this is a new session
   if (messages.length === 0) {
-    const systemPrompt = getSystemPrompt();
-    messages.push({ role: 'system', content: systemPrompt });
+    messages.push({ role: 'system', content: getSystemPrompt() });
   }
 
   messages.push({ role: 'user', content: body.message });
 
   const openaiService = new OpenAIService(env);
 
+  // Not streaming - get full response
   let response: Response;
   try {
-    response = await openaiService.createCompletion(messages);
+    response = await openaiService.createCompletion(messages, false);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     return new Response(JSON.stringify({ error: errorMessage }), {
@@ -85,68 +81,23 @@ export async function handleChat(request: Request, env: Env): Promise<Response> 
     });
   }
 
-  // Build our own SSE stream while reading OpenAI response
+  // Parse full response and extract content
+  const data: any = await response.json();
+  const assistantContent = data.choices?.[0]?.message?.content || '';
+
+  // Save messages
+  messages.push({ role: 'assistant', content: assistantContent });
+  await sessionService.save(body.sessionId, token, messages);
+
+  // Return as SSE
   const encoder = new TextEncoder();
-  let assistantContent = '';
-
   const stream = new ReadableStream({
-    async start(controller) {
-      const reader = response.body!.getReader();
-      const decoder = new TextDecoder();
-
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-
-          if (done) {
-            // Send [DONE] to signal end
-            controller.enqueue(encoder.encode(`event: message\ndata: ${JSON.stringify({ content: '', done: true })}\n\n`));
-            controller.close();
-
-            // Save assistant message to session
-            if (assistantContent) {
-              messages.push({ role: 'assistant', content: assistantContent });
-              await sessionService.save(body.sessionId!, token, messages);
-            }
-            return;
-          }
-
-          const chunk = decoder.decode(value, { stream: true });
-          const lines = chunk.split('\n');
-
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const data = line.slice(6);
-
-              if (data === '[DONE]') {
-                controller.enqueue(encoder.encode(`event: message\ndata: ${JSON.stringify({ content: '', done: true })}\n\n`));
-                controller.close();
-
-                // Save assistant message to session
-                if (assistantContent) {
-                  messages.push({ role: 'assistant', content: assistantContent });
-                  await sessionService.save(body.sessionId!, token, messages);
-                }
-                return;
-              }
-
-              try {
-                const parsed = JSON.parse(data);
-                const content = parsed.choices?.[0]?.delta?.content;
-
-                if (content) {
-                  assistantContent += content;
-                  controller.enqueue(encoder.encode(`event: message\ndata: ${JSON.stringify({ content, done: false })}\n\n`));
-                }
-              } catch {
-                // Skip invalid JSON
-              }
-            }
-          }
-        }
-      } catch (err) {
-        controller.error(err);
+    start(controller) {
+      if (assistantContent) {
+        controller.enqueue(encoder.encode(`event: message\ndata: ${JSON.stringify({ content: assistantContent, done: false })}\n\n`));
       }
+      controller.enqueue(encoder.encode(`event: message\ndata: ${JSON.stringify({ content: '', done: true })}\n\n`));
+      controller.close();
     },
   });
 

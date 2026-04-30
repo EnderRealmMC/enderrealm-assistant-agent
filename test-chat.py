@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 EnderRealm Assistant Agent - 测试脚本
 支持创建会话、聊天、获取上下文、导出/导入等操作
@@ -6,18 +7,56 @@ EnderRealm Assistant Agent - 测试脚本
 
 import json
 import sys
+import io
 from typing import Optional
+
+# Fix Windows console encoding issues
+if sys.platform == 'win32':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 try:
     import requests
 except ImportError:
-    print("请先安装 requests: pip install requests")
+    print("please install requests: pip install requests")
     sys.exit(1)
 
 BASE_URL = "http://localhost:8787"
+SESSION_FILE = ".session.json"
 
 session_id: Optional[str] = None
 session_token: Optional[str] = None
+
+
+def load_session():
+    """Load session from file"""
+    global session_id, session_token
+    try:
+        with open(SESSION_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            session_id = data.get("id")
+            session_token = data.get("token")
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+
+def save_session():
+    """Save session to file"""
+    if session_id and session_token:
+        with open(SESSION_FILE, "w", encoding="utf-8") as f:
+            json.dump({"id": session_id, "token": session_token}, f)
+
+
+def clear_session():
+    """Clear session file"""
+    global session_id, session_token
+    session_id = None
+    session_token = None
+    try:
+        import os
+        os.remove(SESSION_FILE)
+    except FileNotFoundError:
+        pass
 
 
 def headers():
@@ -33,99 +72,100 @@ def cmd_create():
     global session_id, session_token
     resp = requests.post(f"{BASE_URL}/api/session/create", headers={"Content-Type": "application/json"})
     if resp.status_code != 201:
-        print(f"创建失败: {resp.text}")
+        print(f"[FAIL] Create failed: {resp.text}")
         return
 
     data = resp.json()
     session_id = data["id"]
     session_token = data["token"]
-    print(f"✓ 会话创建成功")
-    print(f"  Session ID: {session_id}")
+    save_session()
+    print(f"[OK] Session created")
+    print(f"  ID:    {session_id}")
     print(f"  Token: {session_token}")
 
 
 def cmd_chat(message: str):
     """发送消息"""
     if not session_id or not session_token:
-        print("请先创建会话 (command: create)")
+        print("[FAIL] Please create session first (command: create)")
         return
 
     resp = requests.post(
         f"{BASE_URL}/api/chat",
         headers=headers(),
         json={"sessionId": session_id, "message": message},
-        stream=True,
     )
 
     if resp.status_code == 401:
-        print(f"认证失败: {resp.text}")
+        print(f"[FAIL] Auth failed: {resp.text}")
         return
     elif resp.status_code != 200:
-        print(f"请求失败 [{resp.status_code}]: {resp.text}")
+        print(f"[FAIL] Request failed [{resp.status_code}]: {resp.text}")
         return
 
-    print("─" * 40)
+    print("-" * 40)
     print("Assistant:", end=" ", flush=True)
 
-    full_content = ""
-    for line in resp.iter_lines():
-        if not line:
-            continue
-        line = line.decode("utf-8")
-        if line.startswith("event: message"):
-            continue
+    # Use raw bytes and decode as UTF-8 to avoid encoding issues
+    text = resp.content.decode("utf-8", errors="replace")
+
+    # Parse SSE lines
+    lines = text.split("\n")
+    buffer = ""
+
+    for line in lines:
         if line.startswith("data: "):
-            data_str = line[6:]
+            data_str = line[6:].strip()
+            if data_str == "[DONE]":
+                break
             try:
                 data = json.loads(data_str)
                 content = data.get("content", "")
-                done = data.get("done", False)
                 if content:
-                    print(content, end="", flush=True)
-                    full_content += content
-                if done:
-                    print()  # 换行
+                    buffer += content
             except json.JSONDecodeError:
                 pass
+
+    print(buffer)
+    print()
 
 
 def cmd_info():
     """查看会话信息"""
     if not session_id or not session_token:
-        print("请先创建会话 (command: create)")
+        print("[FAIL] Please create session first (command: create)")
         return
 
     resp = requests.get(f"{BASE_URL}/api/session/{session_id}", headers=headers())
     if resp.status_code != 200:
-        print(f"获取失败: {resp.text}")
+        print(f"[FAIL] Get failed: {resp.text}")
         return
 
     data = resp.json()
     print(f"Session ID: {data['id']}")
-    print(f"消息数: {data['messageCount']}")
-    print(f"创建时间: {data['createdAt']}")
-    print(f"更新时间: {data['updatedAt']}")
+    print(f"Messages:   {data['messageCount']}")
+    print(f"Created:   {data['createdAt']}")
+    print(f"Updated:   {data['updatedAt']}")
 
 
 def cmd_messages():
     """获取完整消息上下文"""
     if not session_id or not session_token:
-        print("请先创建会话 (command: create)")
+        print("[FAIL] Please create session first (command: create)")
         return
 
     resp = requests.get(f"{BASE_URL}/api/session/{session_id}/messages", headers=headers())
     if resp.status_code != 200:
-        print(f"获取失败: {resp.text}")
+        print(f"[FAIL] Get failed: {resp.text}")
         return
 
     data = resp.json()
     print(f"Session ID: {data['id']}")
-    print(f"消息数: {len(data['messages'])}")
+    print(f"Messages:   {len(data['messages'])}")
     print()
     for i, msg in enumerate(data["messages"]):
         role = msg["role"].upper()
         content = msg["content"]
-        # 显示前100字符
         preview = content[:100] + "..." if len(content) > 100 else content
         print(f"[{i}] {role}: {preview}")
 
@@ -133,18 +173,18 @@ def cmd_messages():
 def cmd_export():
     """导出会话"""
     if not session_id or not session_token:
-        print("请先创建会话 (command: create)")
+        print("[FAIL] Please create session first (command: create)")
         return
 
     resp = requests.get(f"{BASE_URL}/api/session/export/{session_id}", headers=headers())
     if resp.status_code != 200:
-        print(f"导出失败: {resp.text}")
+        print(f"[FAIL] Export failed: {resp.text}")
         return
 
     filename = f"session-{session_id}.json"
     with open(filename, "w", encoding="utf-8") as f:
         f.write(resp.text)
-    print(f"✓ 已导出到 {filename}")
+    print(f"[OK] Exported to {filename}")
 
 
 def cmd_import(path: str):
@@ -153,10 +193,10 @@ def cmd_import(path: str):
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except FileNotFoundError:
-        print(f"文件不存在: {path}")
+        print(f"[FAIL] File not found: {path}")
         return
     except json.JSONDecodeError:
-        print(f"无效的 JSON 文件: {path}")
+        print(f"[FAIL] Invalid JSON file: {path}")
         return
 
     resp = requests.post(
@@ -166,26 +206,27 @@ def cmd_import(path: str):
     )
 
     if resp.status_code != 201:
-        print(f"导入失败: {resp.text}")
+        print(f"[FAIL] Import failed: {resp.text}")
         return
 
     result = resp.json()
     global session_id, session_token
     session_id = result["id"]
     session_token = result["token"]
-    print(f"✓ 导入成功")
-    print(f"  新 Session ID: {session_id}")
-    print(f"  新 Token: {session_token}")
-    print(f"  消息数: {result['messageCount']}")
+    save_session()
+    print(f"[OK] Import successful")
+    print(f"  New ID:    {session_id}")
+    print(f"  New Token: {session_token}")
+    print(f"  Messages:  {result['messageCount']}")
 
 
 def cmd_status():
     """当前会话状态"""
     if not session_id or not session_token:
-        print("未连接会话")
+        print("[INFO] No active session")
     else:
         print(f"Session ID: {session_id}")
-        print(f"Token: {session_token}")
+        print(f"Token:      {session_token}")
 
 
 def cmd_help():
@@ -218,6 +259,11 @@ EnderRealm Assistant Agent - 测试脚本
 
 
 def main():
+    global session_id, session_token
+
+    # Load existing session from file
+    load_session()
+
     if len(sys.argv) < 2:
         # 交互模式
         print("EnderRealm Assistant Agent - 交互模式")
@@ -243,6 +289,11 @@ def main():
                 continue
 
             if cmd.lower() == "create":
+                cmd_create()
+                continue
+
+            if cmd.lower() == "new":
+                clear_session()
                 cmd_create()
                 continue
 
@@ -277,7 +328,10 @@ def main():
         # 单命令模式
         cmd = sys.argv[1].lower()
 
-        if cmd == "create":
+        if cmd.lower() == "create":
+            cmd_create()
+        elif cmd.lower() == "new":
+            clear_session()
             cmd_create()
         elif cmd == "info":
             cmd_info()

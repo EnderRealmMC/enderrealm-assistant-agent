@@ -2,6 +2,7 @@ import type { Env, ChatRequest, Message } from '../types';
 import { OpenAIService } from '../services/openai.service';
 import { SessionService } from '../services/session.service';
 import { getSystemPrompt } from '../prompts/system';
+import { createStreamingProxy } from '../utils/sse';
 
 function extractToken(request: Request): string | null {
   return request.headers.get('X-Session-Token');
@@ -61,10 +62,9 @@ export async function handleChat(request: Request, env: Env): Promise<Response> 
 
   const openaiService = new OpenAIService(env);
 
-  // Not streaming - get full response
-  let response: Response;
+  let upstreamResponse: Response;
   try {
-    response = await openaiService.createCompletion(messages, false);
+    upstreamResponse = await openaiService.createCompletion(messages, true);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     return new Response(JSON.stringify({ error: errorMessage }), {
@@ -73,33 +73,23 @@ export async function handleChat(request: Request, env: Env): Promise<Response> 
     });
   }
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    return new Response(JSON.stringify({ error: `API error ${response.status}: ${errorText}` }), {
-      status: response.status,
+  if (!upstreamResponse.ok) {
+    const errorText = await upstreamResponse.text();
+    return new Response(JSON.stringify({ error: `API error ${upstreamResponse.status}: ${errorText}` }), {
+      status: upstreamResponse.status,
       headers: { 'Content-Type': 'application/json' },
     });
   }
 
-  // Parse full response and extract content
-  const data: any = await response.json();
-  const assistantContent = data.choices?.[0]?.message?.content || '';
+  const upstreamBody = upstreamResponse.body;
+  if (!upstreamBody) {
+    return new Response(JSON.stringify({ error: 'Upstream response has no body' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
 
-  // Save messages
-  messages.push({ role: 'assistant', content: assistantContent });
-  await sessionService.save(body.sessionId, token, messages);
-
-  // Return as SSE
-  const encoder = new TextEncoder();
-  const stream = new ReadableStream({
-    start(controller) {
-      if (assistantContent) {
-        controller.enqueue(encoder.encode(`event: message\ndata: ${JSON.stringify({ content: assistantContent, done: false })}\n\n`));
-      }
-      controller.enqueue(encoder.encode(`event: message\ndata: ${JSON.stringify({ content: '', done: true })}\n\n`));
-      controller.close();
-    },
-  });
+  const { stream: downstreamStream, onComplete } = createStreamingProxy(upstreamBody);
 
   const headers = new Headers({
     'Content-Type': 'text/event-stream',
@@ -108,5 +98,24 @@ export async function handleChat(request: Request, env: Env): Promise<Response> 
     'X-Session-Id': body.sessionId,
   });
 
-  return new Response(stream, { headers });
+  onComplete
+    .then(async (fullContent) => {
+      messages.push({ role: 'assistant', content: fullContent });
+      await sessionService.save(body.sessionId, token, messages);
+      console.log(`[Chat] Saved ${fullContent.length} chars to KV`);
+    })
+    .catch(async (error) => {
+      const errorMessage = error instanceof Error ? error.message : 'Stream error';
+      console.error(`[Chat] Stream error for session ${body.sessionId}:`, errorMessage);
+      if (messages.length > 0 && messages[messages.length - 1].role === 'user') {
+        messages.push({ role: 'assistant', content: '(回答中断)' });
+        try {
+          await sessionService.save(body.sessionId, token, messages);
+        } catch (saveError) {
+          console.error('[Chat] Failed to save session after stream error:', saveError);
+        }
+      }
+    });
+
+  return new Response(downstreamStream, { headers });
 }

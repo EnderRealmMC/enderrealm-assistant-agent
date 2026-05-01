@@ -106,27 +106,25 @@ def cmd_chat(message: str):
     print("-" * 40)
     print("Assistant:", end=" ", flush=True)
 
-    # Use raw bytes and decode as UTF-8 to avoid encoding issues
-    text = resp.content.decode("utf-8", errors="replace")
-
-    # Parse SSE lines
-    lines = text.split("\n")
-    buffer = ""
-
-    for line in lines:
-        if line.startswith("data: "):
-            data_str = line[6:].strip()
+    total_content = ""
+    for line in resp.iter_lines():
+        if not line:
+            continue
+        raw = line.decode("utf-8", errors="replace")
+        if raw.startswith("data: "):
+            data_str = raw[6:].strip()
             if data_str == "[DONE]":
                 break
             try:
                 data = json.loads(data_str)
                 content = data.get("content", "")
                 if content:
-                    buffer += content
+                    total_content += content
+                    print(content, end="", flush=True)
             except json.JSONDecodeError:
                 pass
 
-    print(buffer)
+    print()
     print()
 
 

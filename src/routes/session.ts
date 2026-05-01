@@ -1,4 +1,4 @@
-import type { Env, ImportResult } from '../types';
+import type { Env, ImportResult, Message } from '../types';
 import { SessionService } from '../services/session.service';
 
 function extractToken(request: Request): string | null {
@@ -158,9 +158,12 @@ export async function handleImportSession(request: Request, env: Env): Promise<R
 
   const sessionService = new SessionService(env);
 
+  // Cast imported messages to Message[] - they may not conform exactly
+  const importData = { messages: body.messages as Message[] };
+
   let result: ImportResult;
   try {
-    result = await sessionService.importSession(body);
+    result = await sessionService.importSession(importData);
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : 'Import failed';
     return new Response(JSON.stringify({ error: errorMessage }), {
@@ -175,7 +178,7 @@ export async function handleImportSession(request: Request, env: Env): Promise<R
   });
 }
 
-export async function handleCreateSession(request: Request, env: Env): Promise<Response> {
+export async function handleCreateSession(_request: Request, env: Env): Promise<Response> {
   const sessionService = new SessionService(env);
 
   const sessionId = sessionService.generateSessionId();

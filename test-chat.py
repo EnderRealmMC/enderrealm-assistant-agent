@@ -3,6 +3,7 @@
 """
 EnderRealm Assistant Agent - 测试脚本
 支持创建会话、聊天、获取上下文、导出/导入等操作
+适配 ReAct Agent SSE 事件协议 (reasoning/tool_call/tool_result/final_answer/error)
 """
 
 import json
@@ -23,6 +24,19 @@ except ImportError:
 
 BASE_URL = "http://localhost:8787"
 SESSION_FILE = ".session.json"
+
+# ANSI color codes for terminal output
+class Colors:
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    CYAN = "\033[36m"
+    GREEN = "\033[32m"
+    YELLOW = "\033[33m"
+    BLUE = "\033[34m"
+    MAGENTA = "\033[35m"
+    RED = "\033[31m"
+    GRAY = "\033[90m"
 
 session_id: Optional[str] = None
 session_token: Optional[str] = None
@@ -85,7 +99,7 @@ def cmd_create():
 
 
 def cmd_chat(message: str):
-    """发送消息"""
+    """发送消息并解析 ReAct Agent SSE 事件流"""
     if not session_id or not session_token:
         print("[FAIL] Please create session first (command: create)")
         return
@@ -94,38 +108,99 @@ def cmd_chat(message: str):
         f"{BASE_URL}/api/chat",
         headers=headers(),
         json={"sessionId": session_id, "message": message},
+        stream=True,
     )
 
     if resp.status_code == 401:
-        print(f"[FAIL] Auth failed: {resp.text}")
+        print(f"{Colors.RED}[FAIL] Auth failed: {resp.text}{Colors.RESET}")
         return
     elif resp.status_code != 200:
-        print(f"[FAIL] Request failed [{resp.status_code}]: {resp.text}")
+        print(f"{Colors.RED}[FAIL] Request failed [{resp.status_code}]: {resp.text}{Colors.RESET}")
         return
 
-    print("-" * 40)
-    print("Assistant:", end=" ", flush=True)
+    print("-" * 50)
 
-    total_content = ""
+    current_event = None
+    final_answer = ""
+    in_reasoning = False
+
     for line in resp.iter_lines():
         if not line:
             continue
-        raw = line.decode("utf-8", errors="replace")
+
+        # 手动解码，确保 Windows 下 UTF-8 正确处理
+        raw = line.decode('utf-8', errors='replace') if isinstance(line, bytes) else line
+
+        # SSE format: lines starting with "event:" or "data:"
+        if raw.startswith("event: "):
+            current_event = raw[7:].strip()
+            continue
+
         if raw.startswith("data: "):
             data_str = raw[6:].strip()
-            if data_str == "[DONE]":
-                break
+            if not data_str or data_str == "[DONE]":
+                continue
+
             try:
                 data = json.loads(data_str)
-                content = data.get("content", "")
-                if content:
-                    total_content += content
-                    print(content, end="", flush=True)
             except json.JSONDecodeError:
-                pass
+                continue
 
-    print()
-    print()
+            content = data.get("content", "")
+            done = data.get("done", False)
+
+            if current_event == "reasoning":
+                # AI 推理过程 — 用蓝色显示
+                if not in_reasoning:
+                    print(f"\n{Colors.BLUE}{Colors.DIM}💭 推理: {Colors.RESET}", end="", flush=True)
+                    in_reasoning = True
+                if content:
+                    print(f"{Colors.BLUE}{Colors.DIM}{content}{Colors.RESET}", end="", flush=True)
+
+            elif current_event == "tool_call":
+                in_reasoning = False
+                tool_name = data.get("name", "unknown")
+                tool_args = data.get("arguments", {})
+                # 工具调用 — 用黄色显示
+                args_str = json.dumps(tool_args, ensure_ascii=False) if isinstance(tool_args, dict) else str(tool_args)
+                print(f"\n{Colors.YELLOW}{Colors.BOLD}🔧 调用工具: {tool_name}{Colors.RESET}")
+                print(f"{Colors.YELLOW}{Colors.DIM}   参数: {args_str}{Colors.RESET}", flush=True)
+
+            elif current_event == "tool_result":
+                in_reasoning = False
+                tool_name = data.get("name", "unknown")
+                result_preview = data.get("result", "")
+                if result_preview:
+                    # 截断过长的结果预览
+                    preview = result_preview[:200]
+                    if len(result_preview) > 200:
+                        preview += "..."
+                    print(f"{Colors.GREEN}{Colors.DIM}📋 工具结果 [{tool_name}]:{Colors.RESET}")
+                    print(f"{Colors.GREEN}{Colors.DIM}   {preview}{Colors.RESET}", flush=True)
+
+            elif current_event == "final_answer":
+                in_reasoning = False
+                if content:
+                    if not final_answer:
+                        # 首次收到 final_answer，打印前缀
+                        print(f"\n{Colors.BOLD}🤖 EnderRealm帮帮:{Colors.RESET} ", end="", flush=True)
+                    final_answer += content
+                    print(content, end="", flush=True)
+                if done:
+                    print()  # 换行
+                    print()
+
+            elif current_event == "error":
+                in_reasoning = False
+                error_msg = data.get("error", "Unknown error")
+                print(f"\n{Colors.RED}❌ 错误: {error_msg}{Colors.RESET}")
+                print()
+
+            current_event = None
+
+    # 如果没有收到 final_answer 但有内容流出，兜底
+    if final_answer:
+        print()
 
 
 def cmd_info():
@@ -163,9 +238,24 @@ def cmd_messages():
     print()
     for i, msg in enumerate(data["messages"]):
         role = msg["role"].upper()
-        content = msg["content"]
-        preview = content[:100] + "..." if len(content) > 100 else content
-        print(f"[{i}] {role}: {preview}")
+        content = msg.get("content", "") or ""
+        # For tool role messages, also show the tool name
+        if role == "TOOL":
+            tool_name = msg.get("name", "unknown")
+            preview = content[:150] + "..." if len(content) > 150 else content
+            print(f"[{i}] {Colors.GREEN}TOOL ({tool_name}){Colors.RESET}: {preview}")
+        elif role == "ASSISTANT":
+            # Show tool_calls if present
+            tool_calls = msg.get("tool_calls", [])
+            content_preview = content[:100] + "..." if len(content) > 100 else content
+            if tool_calls:
+                tc_names = [tc["name"] for tc in tool_calls]
+                print(f"[{i}] {Colors.YELLOW}ASSISTANT{Colors.RESET}: {content_preview} [calls: {', '.join(tc_names)}]")
+            else:
+                print(f"[{i}] {Colors.YELLOW}ASSISTANT{Colors.RESET}: {content_preview}")
+        else:
+            preview = content[:100] + "..." if len(content) > 100 else content
+            print(f"[{i}] {role}: {preview}")
 
 
 def cmd_export():
@@ -230,7 +320,7 @@ def cmd_status():
 def cmd_help():
     """帮助信息"""
     print("""
-EnderRealm Assistant Agent - 测试脚本
+EnderRealm Assistant Agent - 测试脚本 (ReAct Agent)
 
 命令:
   create              创建新会话
@@ -242,17 +332,24 @@ EnderRealm Assistant Agent - 测试脚本
   status              查看当前会话状态
   help                显示帮助
 
+SSE 事件说明:
+  reasoning           AI 的推理过程（思考/决策）
+  tool_call           AI 决定调用某个工具
+  tool_result         工具执行结果
+  final_answer        最终回答
+  error               错误信息
+
 示例:
   python test-chat.py create
-  python test-chat.py chat 你好
+  python test-chat.py chat 钻石有什么用？
   python test-chat.py info
   python test-chat.py messages
   python test-chat.py export
-  python test-chat.py import session-xxx.json
 
-快捷命令:
+交互模式:
   直接输入文字发送消息
-  直接输入 q 退出
+  输入 q 退出
+  输入 help 查看帮助
 """)
 
 
@@ -264,7 +361,7 @@ def main():
 
     if len(sys.argv) < 2:
         # 交互模式
-        print("EnderRealm Assistant Agent - 交互模式")
+        print("EnderRealm Assistant Agent - 交互模式 (ReAct Agent)")
         print("输入 q 退出，输入 help 查看帮助")
         cmd_help()
 

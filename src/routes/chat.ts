@@ -1,8 +1,10 @@
 import type { Env, ChatRequest, Message } from '../types';
 import { OpenAIService } from '../services/openai.service';
 import { SessionService } from '../services/session.service';
+import { AgentRunner } from '../services/agent-runner';
+import { createDefaultRegistry } from '../tools';
 import { getSystemPrompt } from '../prompts/system';
-import { createStreamingProxy } from '../utils/sse';
+import { createSSEEmitter } from '../utils/sse-emitter';
 
 function extractToken(request: Request): string | null {
   return request.headers.get('X-Session-Token');
@@ -54,42 +56,17 @@ export async function handleChat(request: Request, env: Env): Promise<Response> 
   const session = await sessionService.get(body.sessionId);
   const messages: Message[] = session?.messages || [];
 
-  if (messages.length === 0) {
-    messages.push({ role: 'system', content: getSystemPrompt() });
-  }
-
+  // 添加用户消息
   messages.push({ role: 'user', content: body.message });
 
+  // 创建 SSE 流和发射器
+  const { stream, emitter } = createSSEEmitter();
+
+  // 初始化 Agent 组件
+  const registry = createDefaultRegistry(env);
+  const systemPrompt = getSystemPrompt(registry.getToolDescriptionsForPrompt());
   const openaiService = new OpenAIService(env);
-
-  let upstreamResponse: Response;
-  try {
-    upstreamResponse = await openaiService.createCompletion(messages, true);
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    return new Response(JSON.stringify({ error: errorMessage }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  }
-
-  if (!upstreamResponse.ok) {
-    const errorText = await upstreamResponse.text();
-    return new Response(JSON.stringify({ error: `API error ${upstreamResponse.status}: ${errorText}` }), {
-      status: upstreamResponse.status,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  }
-
-  const upstreamBody = upstreamResponse.body;
-  if (!upstreamBody) {
-    return new Response(JSON.stringify({ error: 'Upstream response has no body' }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  }
-
-  const { stream: downstreamStream, onComplete } = createStreamingProxy(upstreamBody);
+  const agentRunner = new AgentRunner(openaiService, registry, systemPrompt, env);
 
   const headers = new Headers({
     'Content-Type': 'text/event-stream',
@@ -98,24 +75,37 @@ export async function handleChat(request: Request, env: Env): Promise<Response> 
     'X-Session-Id': body.sessionId,
   });
 
-  onComplete
-    .then(async (fullContent) => {
-      messages.push({ role: 'assistant', content: fullContent });
-      await sessionService.save(body.sessionId, token, messages);
-      console.log(`[Chat] Saved ${fullContent.length} chars to KV`);
-    })
-    .catch(async (error) => {
-      const errorMessage = error instanceof Error ? error.message : 'Stream error';
-      console.error(`[Chat] Stream error for session ${body.sessionId}:`, errorMessage);
-      if (messages.length > 0 && messages[messages.length - 1].role === 'user') {
-        messages.push({ role: 'assistant', content: '(回答中断)' });
-        try {
-          await sessionService.save(body.sessionId, token, messages);
-        } catch (saveError) {
-          console.error('[Chat] Failed to save session after stream error:', saveError);
-        }
-      }
-    });
+  // 异步运行 Agent 循环
+  (async () => {
+    try {
+      const finalMessages = await agentRunner.run(messages, emitter);
 
-  return new Response(downstreamStream, { headers });
+      // 保存会话
+      try {
+        await sessionService.save(body.sessionId, token, finalMessages);
+        console.log(`[Chat] Saved session ${body.sessionId}`);
+      } catch (saveError) {
+        console.error('[Chat] Failed to save session:', saveError);
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      console.error(`[Chat] Agent error for session ${body.sessionId}:`, errorMsg);
+
+      // 尝试保存当前消息（即使出错也保留用户消息）
+      try {
+        await sessionService.save(body.sessionId, token, messages);
+      } catch {
+        // 忽略保存失败
+      }
+    } finally {
+      // 确保流关闭
+      try {
+        emitter.close();
+      } catch {
+        // 流可能已关闭
+      }
+    }
+  })();
+
+  return new Response(stream, { headers });
 }

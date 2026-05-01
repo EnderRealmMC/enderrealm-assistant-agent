@@ -17,7 +17,7 @@ export default {
     }
   },
 
-  async scheduled(event: ScheduledEvent, env: Env): Promise<void> {
+  async scheduled(_event: ScheduledEvent, env: Env): Promise<void> {
     const validatedEnv = getEnv(env);
     const sessionService = new SessionService(validatedEnv);
     const deleted = await sessionService.cleanup();

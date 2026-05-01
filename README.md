@@ -1,31 +1,59 @@
 # EnderRealm Assistant Agent
 
-基于 Cloudflare Workers 的 AI 助手后端，提供 SSE 流式响应。
+基于 Cloudflare Workers 的 AI 智能助手后端，采用 ReAct 架构，支持工具调用和 SSE 流式响应。
+
+## 架构概览
+
+本项目实现了一个 **ReAct (Reasoning + Acting) 智能体**，AI 可以自主决定是否调用工具、调用哪个工具、以及何时给出最终答案。
+
+```
+用户消息 → AgentRunner (ReAct 循环)
+              ├─ 思考 → SSE: reasoning 事件
+              ├─ 调用工具 → SSE: tool_call 事件
+              ├─ 工具结果 → SSE: tool_result 事件
+              ├─ 继续思考... (循环)
+              └─ 最终答案 → SSE: final_answer 事件
+```
+
+### 可用工具
+
+| 工具名 | 说明 |
+|--------|------|
+| `mc-wiki-search` | 搜索中文 Minecraft Wiki，返回相关页面列表 |
+| `mc-wiki-get-page` | 获取中文 Minecraft Wiki 的具体页面内容 |
+
+工具注册采用统一注册表模式，添加新工具只需实现 `Tool` 接口并在 `src/tools/index.ts` 中注册。
 
 ## 项目结构
 
 ```
 enderrealm-assistant-agent/
 ├── src/
-│   ├── index.ts              # Worker 入口
+│   ├── index.ts                # Worker 入口
 │   ├── config/
-│   │   └── env.ts           # 环境变量配置
+│   │   └── env.ts             # 环境变量配置
 │   ├── routes/
-│   │   ├── router.ts        # 路由
-│   │   ├── chat.ts          # /api/chat 处理器
-│   │   ├── health.ts        # /health 处理器
-│   │   └── session.ts       # /api/session/* 处理器
+│   │   ├── router.ts          # 路由
+│   │   ├── chat.ts            # /api/chat 处理器 (ReAct Agent)
+│   │   ├── health.ts          # /health 处理器
+│   │   └── session.ts         # /api/session/* 处理器
 │   ├── services/
-│   │   ├── openai.service.ts# OpenAI 兼容 API 调用
-│   │   └── session.service.ts# KV session 管理
+│   │   ├── agent-runner.ts    # ReAct 循环引擎
+│   │   ├── openai.service.ts  # OpenAI 兼容 API (支持 tools)
+│   │   └── session.service.ts # KV session 管理
 │   ├── prompts/
-│   │   └── system.ts        # 系统提示词
+│   │   └── system.ts          # 系统提示词 (变量化)
+│   ├── tools/
+│   │   ├── index.ts           # 工具统一导出与注册
+│   │   ├── registry.ts        # 工具注册表
+│   │   ├── mc-wiki-search.ts  # MC Wiki 搜索工具
+│   │   └── mc-wiki-get-page.ts# MC Wiki 页面获取工具
 │   ├── types/
-│   │   └── index.ts         # 类型定义
+│   │   └── index.ts           # 类型定义
 │   └── utils/
-│       └── sse.ts           # SSE 工具
-├── test-chat.py             # Python 测试脚本
-├── wrangler.toml            # Cloudflare 配置
+│       └── sse-emitter.ts     # SSE 事件发射器
+├── test-chat.py               # Python 测试脚本 (适配 ReAct SSE)
+├── wrangler.toml              # Cloudflare 配置
 └── tsconfig.json
 ```
 
@@ -66,7 +94,7 @@ curl -X POST http://localhost:8787/api/session/create
 curl -X POST http://localhost:8787/api/chat \
   -H "Content-Type: application/json" \
   -H "X-Session-Token: <your token>" \
-  -d '{"sessionId":"<session_id>","message":"你好"}'
+  -d '{"sessionId":"<session_id>","message":"钻石有什么用？"}'
 
 # 查看会话信息
 curl http://localhost:8787/api/session/<session_id> \
@@ -83,6 +111,69 @@ npm run deploy
 ```
 
 ## API 文档
+
+### SSE 事件协议
+
+聊天接口返回 SSE 流，包含以下事件类型：
+
+| 事件 | 数据格式 | 说明 |
+|------|---------|------|
+| `reasoning` | `{ content: string }` | AI 的推理/思考过程 |
+| `tool_call` | `{ id: string, name: string, arguments: object }` | AI 决定调用某个工具 |
+| `tool_result` | `{ id: string, name: string, result: string }` | 工具执行结果 |
+| `final_answer` | `{ content: string, done: boolean }` | 最终回答（done=true 时流结束） |
+| `error` | `{ error: string }` | 错误信息 |
+
+### 示例：非工具调用（普通对话）
+
+用户问"你好" → AI 直接回答（不调用工具）
+
+```
+event: reasoning
+data: {"content":"用户打招呼，与MC无关，直接回答。"}
+
+event: final_answer
+data: {"content":"你好！我是 EnderRealm 帮帮，有什么可以帮你的吗？","done":false}
+
+event: final_answer
+data: {"content":"","done":true}
+```
+
+### 示例：工具调用（MC 相关问题）
+
+用户问"钻石有什么用？" → AI 搜索 Wiki → 获取页面 → 回答
+
+```
+event: reasoning
+data: {"content":"用户询问钻石用途，与MC相关，需要搜索Wiki。"}
+
+event: reasoning
+data: {"content":"决定使用工具: mc-wiki-search"}
+
+event: tool_call
+data: {"id":"call_1","name":"mc-wiki-search","arguments":{"query":"钻石","limit":5}}
+
+event: tool_result
+data: {"id":"call_1","name":"mc-wiki-search","result":"搜索'钻石'的结果..."}
+
+event: reasoning
+data: {"content":"找到了钻石页面，获取详细内容。"}
+
+event: reasoning
+data: {"content":"决定使用工具: mc-wiki-get-page"}
+
+event: tool_call
+data: {"id":"call_2","name":"mc-wiki-get-page","arguments":{"pageid":10487}}
+
+event: tool_result
+data: {"id":"call_2","name":"mc-wiki-get-page","result":"页面: 钻石 (pageid: 10487)..."}
+
+event: final_answer
+data: {"content":"根据MC Wiki的信息，钻石有以下用途：...","done":false}
+
+event: final_answer
+data: {"content":"","done":true}
+```
 
 ### 概述
 
@@ -114,7 +205,7 @@ Access-Control-Allow-Headers: Content-Type, X-Session-Token
 ### 2. 发送消息
 **POST** `/api/chat`
 
-发送消息并接收 SSE 流式响应。
+发送消息并接收 SSE 流式响应（ReAct Agent 模式）。
 
 **请求头：**
 ```
@@ -126,18 +217,11 @@ X-Session-Token: <session token>
 ```json
 {
   "sessionId": "session_1234567890_abc123",
-  "message": "用户消息"
+  "message": "钻石有什么用？"
 }
 ```
 
-**响应：** SSE 流
-```
-event: message
-data: {"content":"AI 回复内容...","done":false}
-
-event: message
-data: {"content":"","done":true}
-```
+**响应：** SSE 流（事件类型见上方协议说明）
 
 **响应头：**
 - `X-Session-Id`: 会话 ID
@@ -169,7 +253,7 @@ X-Session-Token: <session token>
 ### 4. 获取消息上下文
 **GET** `/api/session/:id/messages`
 
-获取会话的完整消息历史。
+获取会话的完整消息历史（包含工具交互记录）。
 
 **请求头：**
 ```
@@ -182,8 +266,10 @@ X-Session-Token: <session token>
   "id": "session_1234567890_abc123",
   "messages": [
     { "role": "system", "content": "系统提示词..." },
-    { "role": "user", "content": "用户消息" },
-    { "role": "assistant", "content": "AI 回复" }
+    { "role": "user", "content": "钻石有什么用？" },
+    { "role": "assistant", "content": null, "tool_calls": [{"id":"call_1","name":"mc-wiki-search","arguments":{"query":"钻石"}}] },
+    { "role": "tool", "content": "搜索结果...", "tool_call_id": "call_1", "name": "mc-wiki-search" },
+    { "role": "assistant", "content": "根据MC Wiki..." }
   ]
 }
 ```
@@ -203,11 +289,7 @@ X-Session-Token: <session token>
 **响应 (200)：**
 ```json
 {
-  "messages": [
-    { "role": "system", "content": "..." },
-    { "role": "user", "content": "..." },
-    { "role": "assistant", "content": "..." }
-  ],
+  "messages": [...],
   "exportedAt": 1715000000000
 }
 ```
@@ -274,7 +356,7 @@ X-Session-Token: <session token>
 
 ## 前端对接示例
 
-### SSE 解析示例
+### SSE 解析示例（ReAct Agent 模式）
 
 ```javascript
 const response = await fetch('http://localhost:8787/api/chat', {
@@ -285,12 +367,14 @@ const response = await fetch('http://localhost:8787/api/chat', {
   },
   body: JSON.stringify({
     sessionId: sessionId,
-    message: '你好'
+    message: '钻石有什么用？'
   })
 });
 
 const reader = response.body.getReader();
 const decoder = new TextDecoder();
+let currentEvent = '';
+let finalAnswer = '';
 
 while (true) {
   const { done, value } = await reader.read();
@@ -300,17 +384,39 @@ while (true) {
   const lines = chunk.split('\n');
 
   for (const line of lines) {
-    if (line.startsWith('event: message')) {
-      continue;
-    }
-    if (line.startsWith('data: ')) {
+    if (line.startsWith('event: ')) {
+      currentEvent = line.slice(7).trim();
+    } else if (line.startsWith('data: ')) {
       const data = line.slice(6);
-      if (data === '[DONE]') continue;
-
       try {
         const json = JSON.parse(data);
-        if (json.content) {
-          console.log(json.content);  // 累积显示内容
+
+        switch (currentEvent) {
+          case 'reasoning':
+            // AI 的推理过程 - 可展示为"思考中..."
+            console.log('[思考]', json.content);
+            break;
+          case 'tool_call':
+            // AI 决定调用工具
+            console.log(`[调用工具] ${json.name}`, json.arguments);
+            break;
+          case 'tool_result':
+            // 工具执行结果
+            console.log(`[工具结果] ${json.name}:`, json.result.substring(0, 100));
+            break;
+          case 'final_answer':
+            if (json.done) {
+              // 流结束
+              console.log('[完成]', finalAnswer);
+            } else if (json.content) {
+              finalAnswer += json.content;
+              // 逐步展示最终回答
+              process.stdout.write(json.content);
+            }
+            break;
+          case 'error':
+            console.error('[错误]', json.error);
+            break;
         }
       } catch {}
     }
@@ -329,15 +435,66 @@ while (true) {
 python test-chat.py
 
 # 单命令模式
-python test-chat.py create       # 创建会话
-python test-chat.py chat 你好    # 发送消息
-python test-chat.py info         # 查看会话信息
-python test-chat.py messages     # 查看消息列表
-python test-chat.py export       # 导出会话
-python test-chat.py import xxx.json  # 导入会话
+python test-chat.py create              # 创建会话
+python test-chat.py chat 钻石有什么用    # 发送消息
+python test-chat.py info                # 查看会话信息
+python test-chat.py messages            # 查看消息列表
+python test-chat.py export              # 导出会话
+python test-chat.py import xxx.json     # 导入会话
 ```
 
-**注意**：交互模式下，第一条消息发送后需等待 AI 完全回复才能发送第二条（因为采用非流式 API 调用）。
+交互模式下会显示带颜色的 ReAct 事件流：
+- 💭 蓝色 → 推理过程
+- 🔧 黄色 → 工具调用
+- 📋 绿色 → 工具结果
+- 🤖 默认色 → 最终回答
+
+---
+
+## 添加新工具
+
+1. 在 `src/tools/` 下创建新工具文件，实现 `Tool` 接口：
+
+```typescript
+import type { Tool, Env } from '../types';
+
+export class MyNewTool implements Tool {
+  definition = {
+    name: 'my-new-tool',
+    description: '工具描述',
+    parameters: {
+      type: 'object' as const,
+      properties: {
+        query: { type: 'string', description: '查询参数' }
+      },
+      required: ['query'],
+    },
+  };
+
+  async execute(args: Record<string, unknown>, env: Env): Promise<string> {
+    // 实现工具逻辑
+    return '工具结果';
+  }
+}
+```
+
+2. 在 `src/tools/index.ts` 中注册：
+
+```typescript
+import { MyNewTool } from './my-new-tool';
+
+export function createDefaultRegistry(env: Env): ToolRegistry {
+  const registry = new ToolRegistry();
+  registry.register(new McWikiSearchTool());
+  registry.register(new McWikiGetPageTool());
+  registry.register(new MyNewTool());  // 新增
+  return registry;
+}
+```
+
+3. 系统提示词会自动包含新工具的描述，无需手动修改。
+
+---
 
 ## 环境变量
 
@@ -358,21 +515,36 @@ python test-chat.py import xxx.json  # 导入会话
 - **导出/导入**：支持完整会话迁移
 - **过期机制**：默认 7 天无活动自动删除，每次对话后会刷新过期时间
 
+**注意**：
+- 含工具调用的会话消息体积较大（包含搜索结果和页面内容），KV 单值限制 25MB
+- 工具结果已做 8000 字符截断，防止单次会话过大
+- session/token 机制用于防止暴力撞库，不代表加密传输。请使用 HTTPS
+
 **自动清理**：
 - 每天凌晨 4 点（服务器时间）自动清理过期 session
 - 访问过期 session 时会被懒删除（返回 404）
 - 活跃 session 在每次对话完成后自动续期
 
-**注意**：session/token 机制用于防止暴力撞库，不代表加密传输。请使用 HTTPS。
-
 ## 提示词
 
-系统提示词位于 `src/prompts/system.ts`。可以自定义 AI 的行为规则。
+系统提示词位于 `src/prompts/system.ts`，采用变量化设计：
 
-当前默认规则：
-- 默认"不懂"，不确认的问题一律拒绝回答
-- 服务器相关问题需有文档支持
-- 委婉拒绝不确定的问题
+- 工具描述通过 `getSystemPrompt(toolsDescription)` 动态注入
+- 非MC/服务器相关问题直接回答，不调用工具
+- MC相关问题必须通过工具搜索获取信息后才回答
+- 自动包含可用工具列表和使用指南
+
+## ReAct 循环机制
+
+Agent 采用标准 ReAct 模式运行：
+
+1. **Reasoning（推理）**：分析用户是否需要使用工具
+2. **Acting（行动）**：如果需要，调用相应工具
+3. **Observation（观察）**：接收工具返回的结果
+4. **循环**：根据观察结果决定是否继续调用工具或给出最终答案
+5. **Final Answer**：当 AI 认为已获得足够信息，直接回答
+
+最大循环次数：10 次（防无限循环）
 
 ## 部署到 Cloudflare
 

@@ -1,6 +1,6 @@
 import type { Env, Message } from '../types';
 import { ToolRegistry } from '../tools/registry';
-import { OpenAIService, StreamResult } from '../services/openai.service';
+import { OpenAIService } from '../services/openai.service';
 import { SSEEmitter } from '../utils/sse-emitter';
 
 const MAX_ITERATIONS = 10;
@@ -25,13 +25,18 @@ export class AgentRunner {
 
   /**
    * 运行 ReAct 循环，通过 SSE 发射器推送事件。
-   * 
+   *
    * SSE 事件协议:
-   *   - reasoning:  AI 的决策推理过程（为什么调用/不调用工具）
-   *   - tool_call:   AI 决定调用某个工具
-   *   - tool_result:  工具执行结果
-   *   - final_answer: 最终回答（流式，最后一条 done:true）
-   *   - error:       错误信息
+   *   - reasoning:     AI 的推理文本（逐块流式推送，打字机效果）
+   *   - tool_call:     AI 决定调用某个工具
+   *   - tool_result:   工具执行结果
+   *   - final_answer:  最终回答完成信号（done=true 表示流结束）
+   *   - error:         错误信息
+   *
+   * 流式策略：所有 LLM 输出文本均通过 onChunk 逐块推送（打字机效果），
+   * 推送类型为 reasoning。流结束后：
+   *   - 无工具调用 → 发 final_answer {done:true} 标记回答结束
+   *   - 有工具调用 → 继续 ReAct 循环
    */
   async run(
     messages: Message[],
@@ -48,11 +53,15 @@ export class AgentRunner {
     while (iterations < MAX_ITERATIONS) {
       iterations++;
 
-      let result: StreamResult;
+      let result;
       try {
-        result = await this.openaiService.createCompletionSync(
+        // 流式调用 LLM — 文本逐块推送给客户端（打字机效果）
+        result = await this.openaiService.createCompletionStream(
           messages,
           toolDefs.length > 0 ? toolDefs : undefined,
+          (type, chunk) => {
+            emitter.emit(type, { content: chunk });
+          },
         );
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : 'Unknown API error';
@@ -70,30 +79,19 @@ export class AgentRunner {
       };
 
       // 没有工具调用 → 最终回答
+      // 文本已通过 onChunk 以 reasoning 类型流式推送完毕
+      // 只需发送 final_answer {done:true} 信号表示流结束
       if (result.toolCalls.length === 0) {
-        // 如果有思考文本，作为 reasoning 发送（展示AI为何直接回答）
-        if (assistantContent) {
-          emitter.emit('reasoning', { content: assistantContent });
-        }
-        // 发送 final_answer 事件
-        emitter.emit('final_answer', { content: assistantContent, done: false });
         emitter.emit('final_answer', { content: '', done: true });
-
         messages.push(assistantMessage);
         break;
       }
 
-      // 有工具调用 → 进入工具执行流程
-
-      // 如果模型同时输出了文本和 tool_calls，文本作为 reasoning 展示
-      if (assistantContent) {
-        emitter.emit('reasoning', { content: assistantContent });
-      }
-
-      // 发送这个轮次的 reasoning 说明：AI 决定调用哪些工具
+      // 有工具调用 → reasoning 内容已在流中推送
+      // 补充说明即将调用的工具
       const toolNames = result.toolCalls.map(tc => tc.name).join(', ');
       emitter.emit('reasoning', {
-        content: `决定使用工具: ${toolNames}`,
+        content: `\n决定使用工具: ${toolNames}\n`,
       });
 
       messages.push(assistantMessage);
@@ -144,9 +142,8 @@ export class AgentRunner {
     if (iterations >= MAX_ITERATIONS) {
       emitter.emit('final_answer', {
         content: '抱歉，我经过多轮搜索仍未能找到完整的答案。建议你直接查阅 Minecraft Wiki 或咨询管理团队获取更准确的信息。',
-        done: false,
+        done: true,
       });
-      emitter.emit('final_answer', { content: '', done: true });
     }
 
     return messages;

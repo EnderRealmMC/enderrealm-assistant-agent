@@ -27,16 +27,17 @@ export class AgentRunner {
    * 运行 ReAct 循环，通过 SSE 发射器推送事件。
    *
    * SSE 事件协议:
-   *   - reasoning:     AI 的推理文本（逐块流式推送，打字机效果）
+   *   - reasoning:     AI 推理文本（逐块流式推送，打字机效果）
    *   - tool_call:     AI 决定调用某个工具
    *   - tool_result:   工具执行结果
-   *   - final_answer:  最终回答完成信号（done=true 表示流结束）
+   *   - final_answer:  最终回答（逐块流式推送，打字机效果；done=true 表示流结束）
    *   - error:         错误信息
    *
-   * 流式策略：所有 LLM 输出文本均通过 onChunk 逐块推送（打字机效果），
-   * 推送类型为 reasoning。流结束后：
-   *   - 无工具调用 → 发 final_answer {done:true} 标记回答结束
-   *   - 有工具调用 → 继续 ReAct 循环
+   * 流式策略：
+   *   LLM 输出文本通过 onChunk 逐块以 reasoning 类型推送（实时打字机效果）。
+   *   流结束后：
+   *     - 无工具调用 → 将同样内容逐块重放为 final_answer（流式），再发 done:true
+   *     - 有工具调用 → 不发 final_answer，继续 ReAct 循环
    */
   async run(
     messages: Message[],
@@ -54,12 +55,16 @@ export class AgentRunner {
       iterations++;
 
       let result;
+      // 缓存本轮流式文本块，用于后续重放为 final_answer
+      const textChunks: string[] = [];
+
       try {
         // 流式调用 LLM — 文本逐块推送给客户端（打字机效果）
         result = await this.openaiService.createCompletionStream(
           messages,
           toolDefs.length > 0 ? toolDefs : undefined,
           (type, chunk) => {
+            textChunks.push(chunk);
             emitter.emit(type, { content: chunk });
           },
         );
@@ -79,9 +84,11 @@ export class AgentRunner {
       };
 
       // 没有工具调用 → 最终回答
-      // 文本已通过 onChunk 以 reasoning 类型流式推送完毕
-      // 只需发送 final_answer {done:true} 信号表示流结束
+      // 将 reasoning 中已推送的文本逐块重放为 final_answer（流式），再发 done:true
       if (result.toolCalls.length === 0) {
+        for (const chunk of textChunks) {
+          emitter.emit('final_answer', { content: chunk });
+        }
         emitter.emit('final_answer', { content: '', done: true });
         messages.push(assistantMessage);
         break;

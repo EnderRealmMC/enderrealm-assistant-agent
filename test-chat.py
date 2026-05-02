@@ -121,8 +121,10 @@ def cmd_chat(message: str):
     print("-" * 50)
 
     current_event = None
-    final_answer = ""
+    reasoning_text = ""  # 累积 reasoning 文本
+    final_answer_text = ""  # 累积 final_answer 文本
     in_reasoning = False
+    in_final = False
 
     for line in resp.iter_lines():
         if not line:
@@ -150,11 +152,12 @@ def cmd_chat(message: str):
             done = data.get("done", False)
 
             if current_event == "reasoning":
-                # AI 推理过程 — 用蓝色显示
+                # AI 推理过程 — 逐块流式推送（打字机效果）
                 if not in_reasoning:
-                    print(f"\n{Colors.BLUE}{Colors.DIM}💭 推理: {Colors.RESET}", end="", flush=True)
+                    print(f"\n{Colors.BLUE}{Colors.DIM}💭 ", end="", flush=True)
                     in_reasoning = True
                 if content:
+                    reasoning_text += content
                     print(f"{Colors.BLUE}{Colors.DIM}{content}{Colors.RESET}", end="", flush=True)
 
             elif current_event == "tool_call":
@@ -179,14 +182,16 @@ def cmd_chat(message: str):
                     print(f"{Colors.GREEN}{Colors.DIM}   {preview}{Colors.RESET}", flush=True)
 
             elif current_event == "final_answer":
+                # 最终回答 — 也是逐块流式推送（打字机效果）
                 in_reasoning = False
                 if content:
-                    if not final_answer:
-                        # 首次收到 final_answer，打印前缀
-                        print(f"\n{Colors.BOLD}🤖 EnderRealm帮帮:{Colors.RESET} ", end="", flush=True)
-                    final_answer += content
+                    if not in_final:
+                        print(f"\n{Colors.BOLD}🤖 ", end="", flush=True)
+                        in_final = True
+                    final_answer_text += content
                     print(content, end="", flush=True)
                 if done:
+                    # 流结束
                     print()  # 换行
                     print()
 
@@ -197,10 +202,6 @@ def cmd_chat(message: str):
                 print()
 
             current_event = None
-
-    # 如果没有收到 final_answer 但有内容流出，兜底
-    if final_answer:
-        print()
 
 
 def cmd_info():

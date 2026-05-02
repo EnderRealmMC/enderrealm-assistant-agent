@@ -8,11 +8,11 @@
 
 ```
 用户消息 → AgentRunner (ReAct 循环)
-              ├─ 思考 → SSE: reasoning 事件
+              ├─ 思考 → SSE: reasoning 事件（逐块流式推送，打字机效果）
               ├─ 调用工具 → SSE: tool_call 事件
               ├─ 工具结果 → SSE: tool_result 事件
               ├─ 继续思考... (循环)
-              └─ 最终答案 → SSE: final_answer 事件
+              └─ 最终答案 → SSE: final_answer {done:true} 完成信号
 ```
 
 ### 可用工具
@@ -114,26 +114,43 @@ npm run deploy
 
 ### SSE 事件协议
 
-聊天接口返回 SSE 流，包含以下事件类型：
+聊天接口返回 SSE 流，所有 AI 输出文本均**逐块流式推送**（打字机效果）。
 
 | 事件 | 数据格式 | 说明 |
 |------|---------|------|
-| `reasoning` | `{ content: string }` | AI 的推理/思考过程 |
+| `reasoning` | `{ content: string }` | AI 推理/思考文本（逐块流式推送，打字机效果） |
 | `tool_call` | `{ id: string, name: string, arguments: object }` | AI 决定调用某个工具 |
 | `tool_result` | `{ id: string, name: string, result: string }` | 工具执行结果 |
-| `final_answer` | `{ content: string, done: boolean }` | 最终回答（done=true 时流结束） |
+| `final_answer` | `{ content: string }` 或 `{ content: "", done: true }` | 最终回答（逐块流式推送，`done=true` 表示回答完毕） |
 | `error` | `{ error: string }` | 错误信息 |
+
+> **流式机制说明**：`reasoning` 和 `final_answer` 都是逐块流式推送的。
+> 对于不调用工具的简单对话，AI 的回答会同时以 `reasoning` 和 `final_answer` 两种事件推送（内容相同），
+> 前端可以选择只展示 `final_answer` 作为主要回答，`reasoning` 作为可折叠的思考过程。
+> 工具调用轮次中，AI 的思考文本仅通过 `reasoning` 推送；最终回答轮次的文本通过 `final_answer` 推送。
 
 ### 示例：非工具调用（普通对话）
 
-用户问"你好" → AI 直接回答（不调用工具）
+用户问"你好" → AI 直接回答（不调用工具），文本逐块流式推送：
 
 ```
 event: reasoning
-data: {"content":"用户打招呼，与MC无关，直接回答。"}
+data: {"content":"Hello"}
+
+event: reasoning
+data: {"content":" there! 👋"}
+
+event: reasoning
+data: {"content":" How can I help you?"}
 
 event: final_answer
-data: {"content":"你好！我是 EnderRealm 帮帮，有什么可以帮你的吗？","done":false}
+data: {"content":"Hello"}
+
+event: final_answer
+data: {"content":" there! 👋"}
+
+event: final_answer
+data: {"content":" How can I help you?"}
 
 event: final_answer
 data: {"content":"","done":true}
@@ -141,35 +158,48 @@ data: {"content":"","done":true}
 
 ### 示例：工具调用（MC 相关问题）
 
-用户问"钻石有什么用？" → AI 搜索 Wiki → 获取页面 → 回答
+用户问"钻石有什么用？" → AI 搜索 Wiki → 获取页面 → 回答：
 
 ```
 event: reasoning
-data: {"content":"用户询问钻石用途，与MC相关，需要搜索Wiki。"}
+data: {"content":"我来帮你查一下钻石"}
 
 event: reasoning
-data: {"content":"决定使用工具: mc-wiki-search"}
+data: {"content":"\n决定使用工具: mc-wiki-search\n"}
 
 event: tool_call
-data: {"id":"call_1","name":"mc-wiki-search","arguments":{"query":"钻石","limit":5}}
+data: {"id":"call_1","name":"mc-wiki-search","arguments":{"query":"钻石 用途","limit":5}}
 
 event: tool_result
-data: {"id":"call_1","name":"mc-wiki-search","result":"搜索'钻石'的结果..."}
+data: {"id":"call_1","name":"mc-wiki-search","result":"搜索'钻石 用途'的结果..."}
 
 event: reasoning
-data: {"content":"找到了钻石页面，获取详细内容。"}
+data: {"content":"让我获取详细页面"}
 
 event: reasoning
-data: {"content":"决定使用工具: mc-wiki-get-page"}
+data: {"content":"\n决定使用工具: mc-wiki-get-page\n"}
 
 event: tool_call
-data: {"id":"call_2","name":"mc-wiki-get-page","arguments":{"pageid":10487}}
+data: {"id":"call_2","name":"mc-wiki-get-page","arguments":{"title":"钻石"}}
 
 event: tool_result
 data: {"id":"call_2","name":"mc-wiki-get-page","result":"页面: 钻石 (pageid: 10487)..."}
 
+event: reasoning
+data: {"content":"根据MC Wiki，钻石有以下用途："}
+
+event: reasoning
+data: {"content":"1. 合成高级工具与武器..."}
+
+...（更多 reasoning 块逐块推送）
+
 event: final_answer
-data: {"content":"根据MC Wiki的信息，钻石有以下用途：...","done":false}
+data: {"content":"根据MC Wiki，钻石有以下用途："}
+
+event: final_answer
+data: {"content":"1. 合成高级工具与武器..."}
+
+...（更多 final_answer 块逐块推送）
 
 event: final_answer
 data: {"content":"","done":true}
@@ -374,7 +404,8 @@ const response = await fetch('http://localhost:8787/api/chat', {
 const reader = response.body.getReader();
 const decoder = new TextDecoder();
 let currentEvent = '';
-let finalAnswer = '';
+let reasoningText = '';   // 累积推理过程文本
+let finalAnswerText = ''; // 累积最终回答文本
 
 while (true) {
   const { done, value } = await reader.read();
@@ -393,8 +424,12 @@ while (true) {
 
         switch (currentEvent) {
           case 'reasoning':
-            // AI 的推理过程 - 可展示为"思考中..."
-            console.log('[思考]', json.content);
+            // AI 推理过程 — 逐块流式推送（打字机效果）
+            if (json.content) {
+              reasoningText += json.content;
+              // 显示为思考过程（可折叠）
+              process.stdout.write(json.content);
+            }
             break;
           case 'tool_call':
             // AI 决定调用工具
@@ -405,13 +440,15 @@ while (true) {
             console.log(`[工具结果] ${json.name}:`, json.result.substring(0, 100));
             break;
           case 'final_answer':
-            if (json.done) {
-              // 流结束
-              console.log('[完成]', finalAnswer);
-            } else if (json.content) {
-              finalAnswer += json.content;
+            // 最终回答 — 也是逐块流式推送
+            if (json.content) {
+              finalAnswerText += json.content;
               // 逐步展示最终回答
               process.stdout.write(json.content);
+            }
+            if (json.done) {
+              // 流结束
+              console.log('\n[完成]', finalAnswerText);
             }
             break;
           case 'error':
@@ -443,11 +480,11 @@ python test-chat.py export              # 导出会话
 python test-chat.py import xxx.json     # 导入会话
 ```
 
-交互模式下会显示带颜色的 ReAct 事件流：
-- 💭 蓝色 → 推理过程
+交互模式下所有 AI 文本输出逐块流式显示（打字机效果）：
+- 💭 蓝色 → 推理过程（逐块流式推送）
 - 🔧 黄色 → 工具调用
 - 📋 绿色 → 工具结果
-- 🤖 默认色 → 最终回答
+- 🤖 最终回答（逐块流式推送，与推理过程分开显示）
 
 ---
 
@@ -536,13 +573,19 @@ export function createDefaultRegistry(env: Env): ToolRegistry {
 
 ## ReAct 循环机制
 
-Agent 采用标准 ReAct 模式运行：
+Agent 采用标准 ReAct 模式运行，所有 AI 文本输出均逐块流式推送（打字机效果）：
 
-1. **Reasoning（推理）**：分析用户是否需要使用工具
-2. **Acting（行动）**：如果需要，调用相应工具
-3. **Observation（观察）**：接收工具返回的结果
+1. **Reasoning（推理）**：AI 思考过程，逐块流式推送为 `reasoning` 事件
+2. **Acting（行动）**：如果需要，调用相应工具（`tool_call` 事件）
+3. **Observation（观察）**：接收工具返回的结果（`tool_result` 事件）
 4. **循环**：根据观察结果决定是否继续调用工具或给出最终答案
-5. **Final Answer**：当 AI 认为已获得足够信息，直接回答
+5. **Final Answer（最终回答）**：最终回答逐块流式推送为 `final_answer` 事件，`done=true` 标记流结束
+
+**流式说明**：
+- `reasoning` 事件：每次 LLM 调用的文本输出都逐块推送（实时打字机效果）
+- `final_answer` 事件：最终回答也逐块流式推送，前端可实时拼接显示
+- 无工具调用时，`reasoning` 和 `final_answer` 内容相同（前端可只展示 `final_answer`）
+- 有工具调用时，`reasoning` 是思考过程，最终轮次才有 `final_answer`
 
 最大循环次数：10 次（防无限循环）
 

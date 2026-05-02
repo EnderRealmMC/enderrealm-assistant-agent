@@ -3,6 +3,34 @@ import type { Tool, Env } from '../types';
 const DOCS_BASE_URL = 'https://docs.enderrealm.cn/docs';
 const MAX_CONTENT_LENGTH = 8000;
 
+/**
+ * Manual redirect-following fetch for environments where default redirect
+ * handling may cause infinite loops (e.g., EdgeOne Pages in Workers runtime).
+ */
+async function fetchWithRedirects(url: string, headers: Record<string, string>, maxRedirects = 5): Promise<Response> {
+  let currentUrl = url;
+  for (let i = 0; i <= maxRedirects; i++) {
+    const response = await fetch(currentUrl, {
+      method: 'GET',
+      headers,
+      redirect: 'manual',
+    });
+
+    if ([301, 302, 307, 308].includes(response.status)) {
+      const location = response.headers.get('location');
+      if (!location) {
+        throw new Error(`重定向响应缺少 Location 头 (HTTP ${response.status})`);
+      }
+      currentUrl = new URL(location, currentUrl).href;
+      continue;
+    }
+
+    return response;
+  }
+
+  throw new Error(`获取文档失败：重定向次数超过 ${maxRedirects} 次限制`);
+}
+
 export class ErDocsGetDocTool implements Tool {
   definition = {
     name: 'er-docs-get-doc',
@@ -43,11 +71,9 @@ export class ErDocsGetDocTool implements Tool {
     const url = `${DOCS_BASE_URL}/${locale}/${cleanSlug}.md`;
 
     try {
-      const response = await fetch(url, {
-        headers: {
-          'User-Agent': 'EnderRealmBot/1.0 (https://github.com/EnderRealmMC/enderrealm-assistant-agent)',
-          'Accept': 'text/plain',
-        },
+      const response = await fetchWithRedirects(url, {
+        'User-Agent': 'EnderRealmBot/1.0 (https://github.com/EnderRealmMC/enderrealm-assistant-agent)',
+        'Accept': 'text/plain',
       });
 
       if (!response.ok) {

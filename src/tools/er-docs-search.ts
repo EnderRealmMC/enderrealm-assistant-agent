@@ -1,38 +1,9 @@
 import type { Tool, Env } from '../types';
 
-const SEARCH_INDEX_URL = 'https://docs.enderrealm.cn/docs/search-index.json';
+const SEARCH_INDEX_URL = 'https://raw.githubusercontent.com/EnderRealmMC/EnderRealm-DOCS/main/docs/search-index.json';
 const CACHE_KEY = 'er-docs-search-index';
 const CACHE_TTL = 86400; // 24 hours in seconds
 const SNIPPET_LENGTH = 300;
-
-/**
- * Manual redirect-following fetch for environments where default redirect
- * handling may cause infinite loops (e.g., EdgeOne Pages in Workers runtime).
- */
-async function fetchWithRedirects(url: string, headers: Record<string, string>, maxRedirects = 5): Promise<Response> {
-  let currentUrl = url;
-  for (let i = 0; i <= maxRedirects; i++) {
-    const response = await fetch(currentUrl, {
-      method: 'GET',
-      headers,
-      redirect: 'manual',
-    });
-
-    if ([301, 302, 307, 308].includes(response.status)) {
-      const location = response.headers.get('location');
-      if (!location) {
-        throw new Error(`重定向响应缺少 Location 头 (HTTP ${response.status})`);
-      }
-      // Resolve relative URLs
-      currentUrl = new URL(location, currentUrl).href;
-      continue;
-    }
-
-    return response;
-  }
-
-  throw new Error(`获取文档索引失败：重定向次数超过 ${maxRedirects} 次限制`);
-}
 
 interface DocEntry {
   locale: string;
@@ -52,12 +23,12 @@ async function getSearchIndex(env: Env): Promise<DocEntry[]> {
     return (cached as SearchIndex).entries;
   }
 
-  // Fetch from remote
-  // EdgeOne Pages may cause redirect loops in Workers runtime,
-  // so we manually handle redirects with a limit
-  const response = await fetchWithRedirects(SEARCH_INDEX_URL, {
-    'User-Agent': 'EnderRealmBot/1.0 (https://github.com/EnderRealmMC/enderrealm-assistant-agent)',
-    'Accept': 'application/json',
+  // Fetch from GitHub raw (no redirect issues in Workers runtime)
+  const response = await fetch(SEARCH_INDEX_URL, {
+    headers: {
+      'User-Agent': 'EnderRealmBot/1.0 (https://github.com/EnderRealmMC/enderrealm-assistant-agent)',
+      'Accept': 'application/json',
+    },
   });
 
   if (!response.ok) {

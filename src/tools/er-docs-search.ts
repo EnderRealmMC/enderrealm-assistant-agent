@@ -27,20 +27,25 @@ interface DocEntry {
  */
 function parseLlmsFullTxt(content: string): DocEntry[] {
   const entries: DocEntry[] = [];
-  // Split on "---url:" boundary pattern
-  // Each section starts with: ---\nurl: <path>\n---\n
-  const sections = content.split(/\n---\s*\n/);
+  // llms-full.txt format:
+  // ---\nurl: /path.md\n---\n[content]\n\n---\nurl: /path2.md\n---\n[content]
+  // Split on the boundary pattern '---\nurl: ' which starts each section
+  const sections = content.split(/---\nurl:\s*/);
 
   for (const section of sections) {
-    // Match the url header: url: /some/path.md
-    const urlMatch = section.match(/^url:\s*(\/[^\n]+)\n/);
-    if (!urlMatch) continue;
+    const trimmed = section.trim();
+    if (!trimmed) continue;
 
-    const path = urlMatch[1].trim();
-    // Content starts after the url line
-    const bodyStart = section.indexOf('\n', urlMatch[0].length) + 1;
-    const body = bodyStart > 0 ? section.substring(bodyStart).trim() : '';
+    // Section format: /path.md\n---\n[content]
+    // Find the \n---\n that separates URL header from body
+    const headerEnd = section.indexOf('\n---\n');
+    if (headerEnd === -1) continue;
 
+    const path = section.substring(0, headerEnd).trim();
+    if (!path.startsWith('/')) continue;
+
+    // Body starts after \n---\n (5 chars: \n - - - \n)
+    const body = section.substring(headerEnd + 5).trim();
     if (!body) continue;
 
     // Extract title from first # heading

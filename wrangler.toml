@@ -4,7 +4,7 @@ compatibility_date = "2024-01-01"
 nodejs_compat = true
 
 [vars]
-MODEL_NAME = "qwen/qwen3-coder-480b-a35b-instruct"
+MODEL_NAME = "mimo-v2.5"
 
 [[kv_namespaces]]
 binding = "SESSIONS"

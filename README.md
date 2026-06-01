@@ -8,11 +8,11 @@
 
 ```
 用户消息 → AgentRunner (ReAct 循环)
-              ├─ 思考 → SSE: reasoning 事件（逐块流式推送，打字机效果）
+              ├─ <reasoning>思考</reasoning> → SSE: reasoning 事件（逐块流式推送，打字机效果）
               ├─ 调用工具 → SSE: tool_call 事件
               ├─ 工具结果 → SSE: tool_result 事件
-              ├─ 继续思考... (循环)
-              └─ 最终答案 → SSE: final_answer {done:true} 完成信号
+              ├─ <reasoning>分析结果</reasoning> → SSE: reasoning 事件
+              └─ <final_answer>最终答案</final_answer> → SSE: final_answer {done:true} 完成信号
 ```
 
 ### 可用工具
@@ -125,24 +125,19 @@ npm run deploy
 | `error` | `{ error: string }` | 错误信息 |
 
 > **流式机制说明**：`reasoning` 和 `final_answer` 都是逐块流式推送的。
-> 对于不调用工具的简单对话，AI 的回答会同时以 `reasoning` 和 `final_answer` 两种事件推送（内容相同），
-> 前端可以选择只展示 `final_answer` 作为主要回答，`reasoning` 作为可折叠的思考过程。
-> 工具调用轮次中，AI 的思考文本仅通过 `reasoning` 推送；最终回答轮次的文本通过 `final_answer` 推送。
+> 
+> **标签机制**：LLM 输出中使用 `<reasoning>...</reasoning>` 和 `<final_answer>...</final_answer>` 标签来明确标识输出类型。
+> 标签会被服务端过滤，客户端只看到干净的内容。
+> 
+> - 无工具调用：AI 直接输出 `<final_answer>答案内容</final_answer>`，客户端只收到 `final_answer` 事件
+> - 有工具调用：AI 先输出 `<reasoning>思考过程</reasoning>`，调用工具，最后输出 `<final_answer>最终答案</final_answer>`
+> - 思考过程和最终答案**不会重复**，各司其职
 
 ### 示例：非工具调用（普通对话）
 
-用户问"你好" → AI 直接回答（不调用工具），文本逐块流式推送：
+用户问"你好" → AI 直接回答（不调用工具），只推送 `final_answer`：
 
 ```
-event: reasoning
-data: {"content":"Hello"}
-
-event: reasoning
-data: {"content":" there! 👋"}
-
-event: reasoning
-data: {"content":" How can I help you?"}
-
 event: final_answer
 data: {"content":"Hello"}
 
@@ -162,7 +157,7 @@ data: {"content":"","done":true}
 
 ```
 event: reasoning
-data: {"content":"我来帮你查一下钻石"}
+data: {"content":"用户问的是 MC 中钻石的用途。我需要使用工具来查询。\n让我先搜索 \"钻石\" 相关的页面。"}
 
 event: reasoning
 data: {"content":"\n决定使用工具: mc-wiki-search\n"}
@@ -174,7 +169,7 @@ event: tool_result
 data: {"id":"call_1","name":"mc-wiki-search","result":"搜索'钻石 用途'的结果..."}
 
 event: reasoning
-data: {"content":"让我获取详细页面"}
+data: {"content":"找到了相关页面，让我获取详细信息。"}
 
 event: reasoning
 data: {"content":"\n决定使用工具: mc-wiki-get-page\n"}
@@ -186,20 +181,10 @@ event: tool_result
 data: {"id":"call_2","name":"mc-wiki-get-page","result":"页面: 钻石 (pageid: 10487)..."}
 
 event: reasoning
-data: {"content":"根据MC Wiki，钻石有以下用途："}
-
-event: reasoning
-data: {"content":"1. 合成高级工具与武器..."}
-
-...（更多 reasoning 块逐块推送）
+data: {"content":"根据工具返回的信息，我来整理答案。"}
 
 event: final_answer
-data: {"content":"根据MC Wiki，钻石有以下用途："}
-
-event: final_answer
-data: {"content":"1. 合成高级工具与武器..."}
-
-...（更多 final_answer 块逐块推送）
+data: {"content":"根据 Minecraft Wiki，钻石有以下用途：\n1. 合成高级工具与武器\n2. 合成盔甲\n3. 附魔台的必要材料\n..."}
 
 event: final_answer
 data: {"content":"","done":true}
@@ -573,19 +558,36 @@ export function createDefaultRegistry(env: Env): ToolRegistry {
 
 ## ReAct 循环机制
 
-Agent 采用标准 ReAct 模式运行，所有 AI 文本输出均逐块流式推送（打字机效果）：
+Agent 采用标准 ReAct 模式运行，通过标签机制实现思考过程和最终答案的分离：
 
-1. **Reasoning（推理）**：AI 思考过程，逐块流式推送为 `reasoning` 事件
+### 标签机制
+
+LLM 输出中使用以下标签来标识输出类型（标签会被过滤，客户端只看到干净的内容）：
+
+- `<reasoning>...</reasoning>` - 思考/推理过程
+- `<final_answer>...</final_answer>` - 最终答案
+
+### 执行流程
+
+1. **Reasoning（推理）**：AI 在 `<reasoning>` 标签中输出思考过程，逐块流式推送为 `reasoning` 事件
 2. **Acting（行动）**：如果需要，调用相应工具（`tool_call` 事件）
 3. **Observation（观察）**：接收工具返回的结果（`tool_result` 事件）
 4. **循环**：根据观察结果决定是否继续调用工具或给出最终答案
-5. **Final Answer（最终回答）**：最终回答逐块流式推送为 `final_answer` 事件，`done=true` 标记流结束
+5. **Final Answer（最终回答）**：AI 在 `<final_answer>` 标签中输出最终答案，逐块流式推送为 `final_answer` 事件，`done=true` 标记流结束
 
-**流式说明**：
-- `reasoning` 事件：每次 LLM 调用的文本输出都逐块推送（实时打字机效果）
-- `final_answer` 事件：最终回答也逐块流式推送，前端可实时拼接显示
-- 无工具调用时，`reasoning` 和 `final_answer` 内容相同（前端可只展示 `final_answer`）
-- 有工具调用时，`reasoning` 是思考过程，最终轮次才有 `final_answer`
+### 流式解析
+
+OpenAIService 中的 `StreamTagParser` 负责：
+- 实时解析 LLM 输出中的标签
+- 根据标签类型切换推送事件（`reasoning` 或 `final_answer`）
+- 过滤标签本身，客户端只看到干净的内容
+- 支持标签被分割在多个 chunk 中的情况
+
+### 优势
+
+- **不重复**：思考过程和最终答案各司其职，不会重复推送
+- **实时性**：边思考边推送，不需要缓存
+- **自然性**：标签机制符合 LLM 的自然输出模式
 
 最大循环次数：10 次（防无限循环）
 

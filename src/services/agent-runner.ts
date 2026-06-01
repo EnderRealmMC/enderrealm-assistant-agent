@@ -33,11 +33,10 @@ export class AgentRunner {
    *   - final_answer:  最终回答（逐块流式推送，打字机效果；done=true 表示流结束）
    *   - error:         错误信息
    *
-   * 流式策略：
-   *   LLM 输出文本通过 onChunk 逐块以 reasoning 类型推送（实时打字机效果）。
-   *   流结束后：
-   *     - 无工具调用 → 将同样内容逐块重放为 final_answer（流式），再发 done:true
-   *     - 有工具调用 → 不发 final_answer，继续 ReAct 循环
+   * 标签机制：
+   *   LLM 输出中使用 <reasoning>...</reasoning> 和 <final_answer>...</final_answer> 标签
+   *   来明确标识当前输出的类型。标签会被过滤，客户端只看到干净的内容。
+   *   OpenAIService 中的 StreamTagParser 负责实时解析和推送。
    */
   async run(
     messages: Message[],
@@ -55,16 +54,13 @@ export class AgentRunner {
       iterations++;
 
       let result;
-      // 缓存本轮流式文本块，用于后续重放为 final_answer
-      const textChunks: string[] = [];
 
       try {
-        // 流式调用 LLM — 文本逐块推送给客户端（打字机效果）
+        // 流式调用 LLM — 通过标签解析器实时推送 reasoning/final_answer
         result = await this.openaiService.createCompletionStream(
           messages,
           toolDefs.length > 0 ? toolDefs : undefined,
           (type, chunk) => {
-            textChunks.push(chunk);
             emitter.emit(type, { content: chunk });
           },
         );
@@ -84,22 +80,21 @@ export class AgentRunner {
       };
 
       // 没有工具调用 → 最终回答
-      // 将 reasoning 中已推送的文本逐块重放为 final_answer（流式），再发 done:true
+      // 标签解析器已经通过 <final_answer> 标签推送了内容
+      // 只需要发送 done:true 标记流结束
       if (result.toolCalls.length === 0) {
-        for (const chunk of textChunks) {
-          emitter.emit('final_answer', { content: chunk });
-        }
         emitter.emit('final_answer', { content: '', done: true });
         messages.push(assistantMessage);
         break;
       }
 
-      // 有工具调用 → reasoning 内容已在流中推送
-      // 补充说明即将调用的工具
-      const toolNames = result.toolCalls.map(tc => tc.name).join(', ');
-      emitter.emit('reasoning', {
-        content: `\n决定使用工具: ${toolNames}\n`,
-      });
+      // 有工具调用 → reasoning 内容已在流中通过标签推送
+      // 如果 LLM 没有输出任何文本，补充一个简单的说明
+      if (!assistantContent) {
+        emitter.emit('reasoning', {
+          content: '\n让我查询一下...\n',
+        });
+      }
 
       messages.push(assistantMessage);
 

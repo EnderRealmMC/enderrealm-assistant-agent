@@ -23,6 +23,151 @@ interface AccumulatingToolCall {
   arguments: string;
 }
 
+/**
+ * 流式标签解析器
+ * 
+ * 功能：
+ * 1. 检测 <reasoning>...</reasoning> 和 <final_answer>...</final_answer> 标签
+ * 2. 根据当前状态决定推送类型
+ * 3. 过滤标签本身，只推送内容
+ * 4. 支持标签被分割在多个 chunk 中
+ */
+class StreamTagParser {
+  private buffer = '';
+  private currentType: 'reasoning' | 'final_answer' = 'reasoning';
+  private onChunk: StreamCallback;
+  
+  // 标签定义
+  private static readonly TAGS = {
+    reasoning: { open: '<reasoning>', close: '</reasoning>' },
+    final_answer: { open: '<final_answer>', close: '</final_answer>' },
+  };
+
+  constructor(onChunk: StreamCallback) {
+    this.onChunk = onChunk;
+  }
+
+  /**
+   * 处理输入的文本块
+   * 自动检测标签并推送内容
+   */
+  processChunk(text: string): void {
+    this.buffer += text;
+    this.processBuffer();
+  }
+
+  /**
+   * 处理缓冲区中的所有内容
+   */
+  private processBuffer(): void {
+    while (this.buffer.length > 0) {
+      // 查找最近的标签位置
+      const nextTag = this.findNextTag();
+      
+      if (!nextTag) {
+        // 没有找到完整标签，检查是否有潜在的标签开始
+        const potentialTagStart = this.findPotentialTagStart();
+        if (potentialTagStart > 0) {
+          // 推送标签之前的内容
+          this.pushContent(this.buffer.substring(0, potentialTagStart));
+          this.buffer = this.buffer.substring(potentialTagStart);
+        }
+        // 等待更多数据
+        break;
+      }
+
+      // 推送标签之前的内容
+      if (nextTag.position > 0) {
+        this.pushContent(this.buffer.substring(0, nextTag.position));
+      }
+
+      // 处理标签
+      if (nextTag.type === 'open') {
+        this.currentType = nextTag.tagType;
+      }
+      // 闭标签不改变状态，保持当前类型
+
+      // 移除已处理的标签
+      this.buffer = this.buffer.substring(nextTag.position + nextTag.length);
+    }
+  }
+
+  /**
+   * 查找下一个完整的标签
+   */
+  private findNextTag(): { position: number; length: number; type: 'open' | 'close'; tagType: 'reasoning' | 'final_answer' } | null {
+    let earliest: { position: number; length: number; type: 'open' | 'close'; tagType: 'reasoning' | 'final_answer' } | null = null;
+
+    for (const [tagType, tags] of Object.entries(StreamTagParser.TAGS)) {
+      const typedTagType = tagType as 'reasoning' | 'final_answer';
+      
+      // 查找开标签
+      const openPos = this.buffer.indexOf(tags.open);
+      if (openPos !== -1) {
+        if (!earliest || openPos < earliest.position) {
+          earliest = { position: openPos, length: tags.open.length, type: 'open', tagType: typedTagType };
+        }
+      }
+
+      // 查找闭标签
+      const closePos = this.buffer.indexOf(tags.close);
+      if (closePos !== -1) {
+        if (!earliest || closePos < earliest.position) {
+          earliest = { position: closePos, length: tags.close.length, type: 'close', tagType: typedTagType };
+        }
+      }
+    }
+
+    return earliest;
+  }
+
+  /**
+   * 查找潜在的标签开始位置（标签可能被分割）
+   * 例如：缓冲区末尾是 "<reason"，等待更多数据
+   */
+  private findPotentialTagStart(): number {
+    // 检查缓冲区末尾是否有潜在的标签开始
+    const lastOpenBracket = this.buffer.lastIndexOf('<');
+    if (lastOpenBracket === -1) return this.buffer.length;
+
+    // 检查从这个位置开始是否可能是标签
+    const potentialTag = this.buffer.substring(lastOpenBracket);
+    const allTags = [
+      StreamTagParser.TAGS.reasoning.open,
+      StreamTagParser.TAGS.reasoning.close,
+      StreamTagParser.TAGS.final_answer.open,
+      StreamTagParser.TAGS.final_answer.close,
+    ];
+
+    for (const tag of allTags) {
+      if (tag.startsWith(potentialTag) || potentialTag.startsWith(tag.substring(0, potentialTag.length))) {
+        return lastOpenBracket;
+      }
+    }
+
+    return this.buffer.length;
+  }
+
+  /**
+   * 推送内容到回调
+   */
+  private pushContent(content: string): void {
+    if (content) {
+      this.onChunk(this.currentType, content);
+    }
+  }
+
+  /**
+   * 刷新缓冲区，推送剩余内容
+   */
+  flush(): void {
+    if (this.buffer) {
+      this.pushContent(this.buffer);
+      this.buffer = '';
+    }
+  }
+}
+
 export class OpenAIService {
   private apiKey: string;
   private baseURL: string;
@@ -37,10 +182,11 @@ export class OpenAIService {
   /**
    * 流式请求 — 解析 SSE 流，实时回调文本片段，返回完整结果。
    * 
-   * - 文本片段通过 onChunk 回调实时推送（打字机效果）
-   * - tool_calls 在流结束时自动拼接完成
-   * - 如果没有 tool_calls，onChunk 类型为 'final_answer'
-   * - 如果有 tool_calls，onChunk 类型为 'reasoning'
+   * 新的标签机制：
+   * - LLM 输出中使用 <reasoning>...</reasoning> 和 <final_answer>...</final_answer> 标签
+   * - 标签会被过滤，客户端只看到干净的内容
+   * - 根据标签实时切换推送类型
+   * - 如果没有标签，默认作为 reasoning 推送
    */
   async createCompletionStream(
     messages: Message[],
@@ -90,16 +236,8 @@ export class OpenAIService {
     const toolCallsMap = new Map<string, AccumulatingToolCall>();
     let finishReason: string | null = null;
 
-    // 我们需要判断：这个流是否有 tool_calls
-    // 如果有 tool_calls → 内容属于 'reasoning'
-    // 如果没有 tool_calls → 内容属于 'final_answer'
-    // 但在流式模式中，我们一开始不知道是否有 tool_calls
-    // 所以先缓存内容，在流结束后再决定
-    // 但这样用户要等到流结束才看到内容...
-
-    // 更好的方案：始终先作为 'reasoning' 推送内容
-    // 如果最终没有 tool_calls，再发一次完整的 'final_answer'
-    // 这样用户能看到打字机效果，且最终内容不会丢失
+    // 创建标签解析器
+    const tagParser = new StreamTagParser(onChunk);
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -133,11 +271,11 @@ export class OpenAIService {
             finishReason = choice.finish_reason;
           }
 
-          // 处理内容流
+          // 处理内容流 - 通过标签解析器处理
           const contentDelta = choice.delta?.content;
           if (contentDelta) {
             fullContent += contentDelta;
-            onChunk('reasoning', contentDelta);
+            tagParser.processChunk(contentDelta);
           }
 
           // 处理 tool_calls 流 (跨 chunk 拼接)
@@ -186,7 +324,7 @@ export class OpenAIService {
             const contentDelta = choice.delta?.content;
             if (contentDelta) {
               fullContent += contentDelta;
-              onChunk('reasoning', contentDelta);
+              tagParser.processChunk(contentDelta);
             }
           }
         } catch {
@@ -194,6 +332,9 @@ export class OpenAIService {
         }
       }
     }
+
+    // 刷新标签解析器的缓冲区
+    tagParser.flush();
 
     // 将累积的 tool_calls 转换为最终格式
     const toolCalls: ToolCall[] = [];
@@ -212,16 +353,6 @@ export class OpenAIService {
         arguments: parsedArgs,
       });
     }
-
-    // 如果有 tool_calls → 之前推送的内容就是 'reasoning'，不需要再做 final_answer
-    // 如果没有 tool_calls → 之前推送的内容需要作为 'final_answer' 再发一次完整版
-    // 但我们已经在流中逐块推送了 reasoning，现在只需要：
-    // - 有 tool_calls: 什么都不用做，reasoning 已经发了
-    // - 没有 tool_calls: 需要再发一个 final_answer 的完整事件
-
-    // 实际上用户已经看到了 reasoning 的打字机效果
-    // 对于无 tool_calls 的情况，我们再发一次 final_answer 事件来标记这是最终答案
-    // 内容就是 fullContent（已经在 reasoning 中逐块推送过了）
 
     return {
       content: fullContent || null,

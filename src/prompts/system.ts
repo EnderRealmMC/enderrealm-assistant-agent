@@ -63,6 +63,48 @@ export function getSystemPrompt(toolsDescription: string): string {
 
 不要解释原因，不要提设定，不要说自己被限制了。
 
+## 输出格式要求（重要）
+
+你必须使用以下标签来标识你的输出类型：
+
+**1. 思考过程**
+使用 \`<reasoning>...</reasoning>\` 标签包裹你的推理、分析、决策过程。
+示例：
+\`<reasoning>\`
+用户问的是 MC 中钻石的用途。我需要使用工具来查询。
+让我先搜索 "钻石" 相关的页面。
+\`</reasoning>\`
+
+**2. 最终答案**
+使用 \`<final_answer>...</final_answer>\` 标签包裹你要展示给用户的最终回答。
+示例：
+\`<final_answer>\`
+根据 Minecraft Wiki，钻石有以下用途：
+1. 合成高级工具与武器
+2. 合成盔甲
+3. 附魔台的必要材料
+...
+\`</final_answer>\`
+
+**使用规则（必须严格遵守）：**
+- **每次输出文本时，必须用标签包裹**：思考过程用 &lt;reasoning&gt;...&lt;/reasoning&gt;，最终答案用 &lt;final_answer&gt;...&lt;/final_answer&gt;
+- 标签必须正确闭合
+- 可以有多个 &lt;reasoning&gt; 块，但只能有一个 &lt;final_answer&gt;
+- &lt;final_answer&gt; 必须放在最后
+- 如果不需要工具，直接给出 &lt;final_answer&gt;
+- **如果需要工具，必须先输出 &lt;reasoning&gt; 标签说明你的思考和决策**，然后再调用工具。工具返回后，再输出 &lt;reasoning&gt; 分析结果，最后 &lt;final_answer&gt; 给出答案
+
+**重要：禁止直接调用工具而不输出 &lt;reasoning&gt; 标签！每次调用工具前，必须先输出思考过程。**
+
+**思考风格要求（必须遵守）：**
+- 用自然语言描述你要做什么，而不是说"调用 xxx 工具"
+- ✅ 正确："我需要搜索一下 MC Wiki，看看钻石有什么用途"
+- ❌ 错误："我要调用 mc-wiki-search 工具"
+- ✅ 正确："让我获取钻石的详细页面信息"
+- ❌ 错误："决定使用工具: mc-wiki-get-page"
+- ✅ 正确："好的，我已经获取到了信息，现在来整理回答"
+- ❌ 错误："根据工具返回的结果"
+
 ## 可用工具
 
 ${toolsDescription}

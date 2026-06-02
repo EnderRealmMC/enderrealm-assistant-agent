@@ -21,6 +21,9 @@
 |--------|------|
 | `mc-wiki-search` | 搜索中文 Minecraft Wiki，返回相关页面列表 |
 | `mc-wiki-get-page` | 获取中文 Minecraft Wiki 的具体页面内容 |
+| `er-docs-search` | 搜索 EnderRealm 服务器文档，支持多关键词搜索 |
+| `er-docs-get-doc` | 获取 EnderRealm 服务器文档的完整内容 |
+| `mc-server-status` | 查询 Minecraft 服务器状态（支持 Java 版、基岩版、双版本） |
 
 工具注册采用统一注册表模式，添加新工具只需实现 `Tool` 接口并在 `src/tools/index.ts` 中注册。
 
@@ -47,7 +50,10 @@ enderrealm-assistant-agent/
 │   │   ├── index.ts           # 工具统一导出与注册
 │   │   ├── registry.ts        # 工具注册表
 │   │   ├── mc-wiki-search.ts  # MC Wiki 搜索工具
-│   │   └── mc-wiki-get-page.ts# MC Wiki 页面获取工具
+│   │   ├── mc-wiki-get-page.ts# MC Wiki 页面获取工具
+│   │   ├── er-docs-search.ts  # EnderRealm 文档搜索工具
+│   │   ├── er-docs-get-doc.ts # EnderRealm 文档获取工具
+│   │   └── mc-server-status.ts# MC 服务器状态查询工具
 │   ├── types/
 │   │   └── index.ts           # 类型定义
 │   └── utils/
@@ -74,6 +80,7 @@ OPENAI_API_KEY=your-api-key
 OPENAI_BASE_URL=https://api.provider.com/v1
 MODEL_NAME=your-model-name
 SESSION_TTL_DAYS=7
+MAX_ITERATIONS=25
 ```
 
 ### 3. 本地开发
@@ -509,6 +516,9 @@ export function createDefaultRegistry(env: Env): ToolRegistry {
   const registry = new ToolRegistry();
   registry.register(new McWikiSearchTool());
   registry.register(new McWikiGetPageTool());
+  registry.register(new ErDocsSearchTool());
+  registry.register(new ErDocsGetDocTool());
+  registry.register(new McServerStatusTool());
   registry.register(new MyNewTool());  // 新增
   return registry;
 }
@@ -526,6 +536,7 @@ export function createDefaultRegistry(env: Env): ToolRegistry {
 | `OPENAI_BASE_URL` | API 基础地址 | - |
 | `MODEL_NAME` | 模型名称 | `deepseek-ai/deepseek-v4-flash` |
 | `SESSION_TTL_DAYS` | Session 有效期（天） | `7` |
+| `MAX_ITERATIONS` | ReAct 循环最大迭代次数 | `25` |
 
 ## KV Session
 
@@ -589,7 +600,7 @@ OpenAIService 中的 `StreamTagParser` 负责：
 - **实时性**：边思考边推送，不需要缓存
 - **自然性**：标签机制符合 LLM 的自然输出模式
 
-最大循环次数：10 次（防无限循环）
+最大循环次数：25 次（可通过 MAX_ITERATIONS 环境变量配置）
 
 ## 部署到 Cloudflare
 

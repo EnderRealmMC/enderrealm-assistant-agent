@@ -87,4 +87,7 @@ export interface Env {
   MODEL_NAME: string;
   SESSIONS: KVNamespace;
   SESSION_TTL_DAYS?: number;
+  MAX_ITERATIONS?: number;
+  TAVILY_API_KEY?: string;   // Tavily 搜索 API Key（优先级 1）
+  BRAVE_API_KEY?: string;    // Brave Search API Key（优先级 2）
 }

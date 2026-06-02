@@ -5,6 +5,7 @@ import { AgentRunner } from '../services/agent-runner';
 import { createDefaultRegistry } from '../tools';
 import { getSystemPrompt } from '../prompts/system';
 import { createSSEEmitter } from '../utils/sse-emitter';
+import { extractUserLocation } from '../utils/geo';
 
 function extractToken(request: Request): string | null {
   return request.headers.get('X-Session-Token');
@@ -64,7 +65,15 @@ export async function handleChat(request: Request, env: Env): Promise<Response> 
 
   // 初始化 Agent 组件
   const registry = createDefaultRegistry(env);
-  const systemPrompt = getSystemPrompt(registry.getToolDescriptionsForPrompt());
+  const userLocation = extractUserLocation(request);
+  const currentTime = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+  const locationSection = userLocation ? `\n## 用户位置\n${userLocation}\n` : '';
+
+  const systemPrompt = getSystemPrompt({
+    toolsDescription: registry.getToolDescriptionsForPrompt(),
+    currentTime,
+    locationSection,
+  });
   const openaiService = new OpenAIService(env);
   const agentRunner = new AgentRunner(openaiService, registry, systemPrompt, env);
 

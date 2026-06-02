@@ -146,6 +146,11 @@ vite.config.ts.timestamp-*
 .dev.vars
 .wrangler/
 
+# TypeScript 编译输出
+src/**/*.js
+src/**/*.js.map
+src/**/*.d.ts
+
 # Session files (test-chat.py)
 .session.json
 session-*.json

@@ -13,5 +13,8 @@ export function getEnv(env: Env): Env {
   if (env.SESSION_TTL_DAYS === undefined) {
     env.SESSION_TTL_DAYS = 7;
   }
+  if (env.MAX_ITERATIONS === undefined) {
+    env.MAX_ITERATIONS = 25;
+  }
   return env;
 }

@@ -3,13 +3,14 @@ import { ToolRegistry } from '../tools/registry';
 import { OpenAIService } from '../services/openai.service';
 import { SSEEmitter } from '../utils/sse-emitter';
 
-const MAX_ITERATIONS = 10;
+const DEFAULT_MAX_ITERATIONS = 25;
 
 export class AgentRunner {
   private openaiService: OpenAIService;
   private registry: ToolRegistry;
   private systemPrompt: string;
   private env: Env;
+  private maxIterations: number;
 
   constructor(
     openaiService: OpenAIService,
@@ -21,6 +22,7 @@ export class AgentRunner {
     this.registry = registry;
     this.systemPrompt = systemPrompt;
     this.env = env;
+    this.maxIterations = env.MAX_ITERATIONS ?? DEFAULT_MAX_ITERATIONS;
   }
 
   /**
@@ -50,7 +52,7 @@ export class AgentRunner {
     const toolDefs = this.registry.getToolDefinitions();
     let iterations = 0;
 
-    while (iterations < MAX_ITERATIONS) {
+    while (iterations < this.maxIterations) {
       iterations++;
 
       let result;
@@ -141,7 +143,7 @@ export class AgentRunner {
     }
 
     // 达到最大迭代次数
-    if (iterations >= MAX_ITERATIONS) {
+    if (iterations >= this.maxIterations) {
       emitter.emit('final_answer', {
         content: '抱歉，我经过多轮搜索仍未能找到完整的答案。建议你直接查阅 Minecraft Wiki 或咨询管理团队获取更准确的信息。',
         done: true,

@@ -88,4 +88,12 @@ export class SessionService {
       messageCount: messages.length,
     };
   }
+
+  async delete(sessionId: string): Promise<boolean> {
+    const session = await this.get(sessionId);
+    if (!session) return false;
+
+    await this.kv.delete(sessionId);
+    return true;
+  }
 }

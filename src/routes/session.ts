@@ -195,3 +195,39 @@ export async function handleCreateSession(_request: Request, env: Env): Promise<
     headers: { 'Content-Type': 'application/json' },
   });
 }
+
+export async function handleDeleteSession(request: Request, env: Env): Promise<Response> {
+  const token = extractToken(request);
+  if (!token) {
+    return unauthorized('Missing X-Session-Token header');
+  }
+
+  const url = new URL(request.url);
+  const sessionId = url.pathname.split('/').pop();
+
+  if (!sessionId) {
+    return new Response(JSON.stringify({ error: 'Missing sessionId' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const sessionService = new SessionService(env);
+
+  const isValid = await sessionService.validateToken(sessionId, token);
+  if (!isValid) {
+    return unauthorized('Invalid token');
+  }
+
+  const deleted = await sessionService.delete(sessionId);
+  if (!deleted) {
+    return new Response(JSON.stringify({ error: 'Session not found' }), {
+      status: 404,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  return new Response(JSON.stringify({ success: true }), {
+    headers: { 'Content-Type': 'application/json' },
+  });
+}

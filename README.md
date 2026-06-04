@@ -298,7 +298,30 @@ X-Session-Token: <session token>
 
 ---
 
-### 5. 导出会话
+### 5. 删除会话
+**DELETE** `/api/session/:id`
+
+删除指定会话（需要验证 token）。
+
+**请求头：**
+```
+X-Session-Token: <session token>
+```
+
+**响应 (200):**
+```json
+{
+  "success": true
+}
+```
+
+**错误响应：**
+- `401`: 缺少或无效的 X-Session-Token
+- `404`: Session 不存在
+
+---
+
+### 6. 导出会话
 **GET** `/api/session/export/:id`
 
 导出会话为 JSON 文件下载。
@@ -320,7 +343,7 @@ X-Session-Token: <session token>
 
 ---
 
-### 6. 导入会话
+### 7. 导入会话
 **POST** `/api/session/import`
 
 导入会话 JSON，生成新的会话（不保留原 ID）。
@@ -346,7 +369,7 @@ X-Session-Token: <session token>
 
 ---
 
-### 7. 健康检查
+### 8. 健康检查
 **GET** `/health`
 
 **响应 (200):**

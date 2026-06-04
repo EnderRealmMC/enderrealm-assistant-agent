@@ -7,11 +7,12 @@ import {
   handleExportSession,
   handleImportSession,
   handleCreateSession,
+  handleDeleteSession,
 } from './session';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, X-Session-Token',
 };
 
@@ -51,6 +52,8 @@ export async function router(request: Request, env: Env): Promise<Response> {
     response = await handleGetSession(request, env);
   } else if (request.method === 'GET' && path.match(/^\/api\/session\/[^/]+\/messages$/)) {
     response = await handleGetMessages(request, env);
+  } else if (request.method === 'DELETE' && path.match(/^\/api\/session\/[^/]+$/)) {
+    response = await handleDeleteSession(request, env);
   } else {
     response = new Response('Not Found', { status: 404 });
   }

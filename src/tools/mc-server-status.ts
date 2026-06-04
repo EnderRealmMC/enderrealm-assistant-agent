@@ -187,7 +187,7 @@ export class McServerStatusTool implements Tool {
     const lines: string[] = [];
 
     // 基本信息
-    lines.push(`状态：${data.online ? '在线' : '离线'}`);
+    lines.push(`状态：${data.online ? '在线' : '离线或不存在'}`);
     lines.push(`地址：${data.host}:${data.port}`);
 
     if (data.ip_address) {
@@ -197,7 +197,7 @@ export class McServerStatusTool implements Tool {
     lines.push(`EULA 封禁：${data.eula_blocked ? '是' : '否'}`);
 
     if (!data.online) {
-      lines.push('\n服务器当前离线，无法获取详细信息。');
+      lines.push('\n服务器当前离线或不存在，无法获取详细信息。');
       return lines.join('\n');
     }
 

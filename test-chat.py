@@ -309,6 +309,25 @@ def cmd_import(path: str):
     print(f"  Messages:  {result['messageCount']}")
 
 
+def cmd_delete():
+    """删除当前会话"""
+    if not session_id or not session_token:
+        print("[FAIL] Please create session first (command: create)")
+        return
+
+    resp = requests.delete(f"{BASE_URL}/api/session/{session_id}", headers=headers())
+    if resp.status_code != 200:
+        print(f"[FAIL] Delete failed: {resp.text}")
+        return
+
+    data = resp.json()
+    if data.get("success"):
+        print(f"[OK] Session deleted: {session_id}")
+        clear_session()
+    else:
+        print(f"[FAIL] Delete failed: {data}")
+
+
 def cmd_status():
     """当前会话状态"""
     if not session_id or not session_token:
@@ -330,6 +349,7 @@ EnderRealm Assistant Agent - 测试脚本 (ReAct Agent)
   messages            查看消息列表
   export              导出会话到文件
   import <path>       从文件导入会话
+  delete              删除当前会话
   status              查看当前会话状态
   help                显示帮助
 
@@ -346,6 +366,7 @@ SSE 事件说明:
   python test-chat.py info
   python test-chat.py messages
   python test-chat.py export
+  python test-chat.py delete
 
 交互模式:
   直接输入文字发送消息
@@ -405,6 +426,10 @@ def main():
                 cmd_export()
                 continue
 
+            if cmd.lower() == "delete":
+                cmd_delete()
+                continue
+
             if cmd.lower() == "status":
                 cmd_status()
                 continue
@@ -435,6 +460,8 @@ def main():
             cmd_messages()
         elif cmd == "export":
             cmd_export()
+        elif cmd == "delete":
+            cmd_delete()
         elif cmd == "status":
             cmd_status()
         elif cmd == "help":

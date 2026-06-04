@@ -66,7 +66,8 @@ export async function handleChat(request: Request, env: Env): Promise<Response> 
   // 初始化 Agent 组件
   const registry = createDefaultRegistry(env);
   const userLocation = extractUserLocation(request);
-  const currentTime = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+  const now = new Date();
+  const currentTime = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日`;
   const locationSection = userLocation ? `\n## 用户位置\n${userLocation}\n` : '';
 
   const systemPrompt = getSystemPrompt({
